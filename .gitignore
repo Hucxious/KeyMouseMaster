@@ -1,0 +1,76 @@
+# ==================================================
+# KeyMouseMaster / Qt qmake
+# ==================================================
+
+# 不上传的目录
+/build/
+/-Force/
+
+# Qt Creator常见影子构建目录
+/build-*/
+/cmake-build-*/
+
+# Debug和Release输出
+/debug/
+/release/
+/bin/
+/obj/
+
+# qmake生成文件
+Makefile
+Makefile.*
+*.make
+.qmake.stash
+qmake.stash
+
+# C/C++编译中间文件
+*.o
+*.obj
+*.lo
+*.a
+*.lib
+*.exp
+*.ilk
+*.pdb
+*.idb
+
+# Windows可执行文件和动态库
+*.exe
+*.dll
+
+# Qt自动生成文件
+moc_*.cpp
+moc_*.h
+ui_*.h
+qrc_*.cpp
+
+# Qt Creator用户配置
+*.pro.user
+*.pro.user.*
+*.autosave
+
+# VSCode本地配置
+.vscode/
+*.code-workspace
+
+# 日志和临时文件
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# Windows系统文件
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS文件，防止跨设备产生
+.DS_Store
+
+# 测试缓存和临时输出
+/tests/output/
+/temp/
+/tmp/

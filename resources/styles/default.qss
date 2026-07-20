@@ -1,0 +1,47 @@
+/* KeyMouseMaster 默认样式表 */
+
+/* 全局 */
+* {
+    font-family: "Microsoft YaHei", "Segoe UI", "Noto Sans CJK SC", sans-serif;
+}
+
+/* 分割器 */
+QSplitter::handle {
+    background-color: #ddd;
+    width: 2px;
+}
+
+/* 表格 */
+QTableView {
+    selection-background-color: #2196F3;
+    selection-color: white;
+    alternate-background-color: #f9f9f9;
+}
+
+/* 下拉框 */
+QComboBox:disabled, QSpinBox:disabled, QLineEdit:disabled {
+    background-color: #f0f0f0;
+    color: #999;
+}
+
+/* 复选框 */
+QCheckBox:disabled {
+    color: #999;
+}
+
+/* 滚动条 */
+QScrollBar:vertical {
+    border: none;
+    background: #f0f0f0;
+    width: 10px;
+}
+
+QScrollBar::handle:vertical {
+    background: #ccc;
+    border-radius: 5px;
+    min-height: 20px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #aaa;
+}
