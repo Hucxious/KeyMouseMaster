@@ -1,4 +1,5 @@
 #include "WindowsHotkeyManager.h"
+#include "utils/KeyMapper.h"
 #include "Logger.h"
 #include <QDebug>
 
@@ -27,7 +28,16 @@ int WindowsHotkeyManager::registerHotkey(const HotkeyInfo& hk)
 #ifdef Q_OS_WIN
     int id = nextId();
     uint32_t mod = hotkeyToNativeMod(hk);
-    uint32_t vk = static_cast<uint32_t>(hk.key);
+    // 将 Qt 键值转换为 Windows 虚拟键码
+    // Qt::Key_F8 = 0x01000037 → VK_F8 = 0x77
+    // 对于字母数字键，Qt 键值与 VK 一致；功能键等特殊键需要映射表转换
+    uint32_t vk = KeyMapper::qtKeyToWinVk(hk.key);
+    if (vk == 0) {
+        LOG_ERROR(QString("无法将Qt键值 0x%1 转换为Windows虚拟键码")
+            .arg(hk.key, 0, 16));
+        emit hotkeyRegisterFailed(-1, "不支持的按键");
+        return -1;
+    }
 
     // 检查是否与已注册热键冲突
     for (auto it = m_registeredHotkeys.begin(); it != m_registeredHotkeys.end(); ++it) {
@@ -36,6 +46,7 @@ int WindowsHotkeyManager::registerHotkey(const HotkeyInfo& hk)
             && it.value().shift == hk.shift
             && it.value().alt == hk.alt
             && it.value().win == hk.win) {
+            LOG_WARNING(QString("快捷键冲突: %1").arg(hk.toString()));
             emit hotkeyConflict(id, it.key());
             emit hotkeyRegisterFailed(id, "快捷键已被其他功能占用");
             return -1;
@@ -109,7 +120,11 @@ HotkeyInfo WindowsHotkeyManager::hotkeyInfo(int id) const
 }
 
 bool WindowsHotkeyManager::nativeEventFilter(const QByteArray& eventType, void* message,
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
                                               qintptr* result)
+#else
+                                              long* result)
+#endif
 {
     Q_UNUSED(eventType)
 
@@ -134,6 +149,7 @@ uint32_t WindowsHotkeyManager::hotkeyToNativeMod(const HotkeyInfo& hk)
 {
     uint32_t mod = 0;
 #ifdef Q_OS_WIN
+    mod |= MOD_NOREPEAT;
     if (hk.ctrl)  mod |= MOD_CONTROL;
     if (hk.shift) mod |= MOD_SHIFT;
     if (hk.alt)   mod |= MOD_ALT;

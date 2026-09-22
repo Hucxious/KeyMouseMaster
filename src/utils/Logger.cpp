@@ -4,7 +4,6 @@
 #include <QDir>
 #include <QTextStream>
 #include <QDebug>
-#include <QFileInfo>
 
 Logger* Logger::s_instance = nullptr;
 
@@ -20,10 +19,8 @@ Logger::~Logger()
 
 Logger* Logger::instance()
 {
-    if (!s_instance) {
-        s_instance = new Logger();
-    }
-    return s_instance;
+    static Logger instance;
+    return &instance;
 }
 
 void Logger::init(const QString& logDir)
@@ -38,24 +35,36 @@ void Logger::init(const QString& logDir)
         dir.mkpath(".");
     }
 
-    m_logFilePath = dir.filePath("keymousemaster.log");
-
-    // 检查文件大小，如果超过上限则轮转
-    QFileInfo fi(m_logFilePath);
-    if (fi.exists() && fi.size() > AppConstants::MAX_LOG_SIZE) {
-        QString backupPath = m_logFilePath + ".old";
-        QFile::remove(backupPath);
-        QFile::rename(m_logFilePath, backupPath);
-    }
+    // 使用带时间戳的日志文件名: Log_KMM_yyyy-MM-dd_HH-mm-ss.log
+    QString timestamp = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss");
+    QString logFileName = QString("Log_KMM_%1.log").arg(timestamp);
+    m_logFilePath = dir.filePath(logFileName);
 
     m_logFile.setFileName(m_logFilePath);
-    m_logFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
+    if (!m_logFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+        m_logDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/log";
+        dir = QDir(m_logDir); dir.mkpath(".");
+        m_logFilePath = dir.filePath(logFileName);
+        m_logFile.setFileName(m_logFilePath);
+        if (!m_logFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+            qWarning("KMM: cannot open log file"); return;
+        }
+    }
 
     m_initialized = true;
 
     QTextStream ts(&m_logFile);
-    ts << "\n========== KeyMouseMaster 启动 " << QDateTime::currentDateTime().toString(Qt::ISODate) << " ==========\n";
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    ts.setCodec("UTF-8");
+#endif
+    ts << "========== KeyMouseMaster 启动 " << QDateTime::currentDateTime().toString(Qt::ISODate) << " ==========\n";
     ts.flush();
+
+    // 清理旧日志：只保留最近30个日志文件
+    QStringList logFiles = dir.entryList({"Log_KMM_*.log"}, QDir::Files, QDir::Time);
+    for (int i = 30; i < logFiles.size(); ++i) {
+        QFile::remove(dir.absoluteFilePath(logFiles[i]));
+    }
 }
 
 void Logger::shutdown()
@@ -64,6 +73,9 @@ void Logger::shutdown()
     if (!m_initialized) return;
 
     QTextStream ts(&m_logFile);
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    ts.setCodec("UTF-8");
+#endif
     ts << "========== KeyMouseMaster 退出 " << QDateTime::currentDateTime().toString(Qt::ISODate) << " ==========\n";
     ts.flush();
 
@@ -83,6 +95,9 @@ void Logger::log(Level level, const QString& message)
     // 写入文件
     if (m_initialized && m_logFile.isOpen()) {
         QTextStream ts(&m_logFile);
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+        ts.setCodec("UTF-8");
+#endif
         ts << formatted << "\n";
         ts.flush();
 
@@ -90,12 +105,12 @@ void Logger::log(Level level, const QString& message)
         static int logCount = 0;
         if (++logCount % 100 == 0) {
             if (m_logFile.size() > AppConstants::MAX_LOG_SIZE) {
-                locker.unlock();
                 rotateLogIfNeeded();
             }
         }
     }
 
+    locker.unlock();
     emit newLogMessage(formatted);
 }
 

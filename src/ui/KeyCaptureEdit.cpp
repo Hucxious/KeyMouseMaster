@@ -1,4 +1,5 @@
 #include "KeyCaptureEdit.h"
+#include "HotkeyEdit.h"
 #include "utils/KeyMapper.h"
 #include <QKeyEvent>
 #include <QKeySequence>
@@ -10,6 +11,11 @@ KeyCaptureEdit::KeyCaptureEdit(QWidget* parent)
     setPlaceholderText("点击此处捕获按键...");
     setMinimumWidth(200);
     updateDisplay();
+}
+
+KeyCaptureEdit::~KeyCaptureEdit()
+{
+    if (m_capturing) finishCapture();
 }
 
 void KeyCaptureEdit::setKeyInfo(const KeyInfo& info)
@@ -58,8 +64,11 @@ void KeyCaptureEdit::keyPressEvent(QKeyEvent* event)
 
     // 构建KeyInfo
     m_keyInfo.qtKey = key;
-    m_keyInfo.winVk = KeyMapper::qtKeyToWinVk(key);
-    m_keyInfo.scanCode = KeyMapper::qtKeyToScanCode(key);
+    m_keyInfo.winVk = event->nativeVirtualKey() ? event->nativeVirtualKey() : KeyMapper::qtKeyToWinVk(key);
+    m_keyInfo.scanCode = event->nativeScanCode() ? event->nativeScanCode() : KeyMapper::qtKeyToScanCode(key);
+    m_keyInfo.isExtended = (m_keyInfo.scanCode & 0x100) != 0;
+    for (const auto& entry : KeyMapper::allKeys())
+        if (entry.qtKey == key) m_keyInfo.isExtended = entry.isExtended;
 
     // 修饰键
     Qt::KeyboardModifiers mods = event->modifiers();
@@ -87,7 +96,16 @@ void KeyCaptureEdit::keyPressEvent(QKeyEvent* event)
 void KeyCaptureEdit::keyReleaseEvent(QKeyEvent* event)
 {
     if (m_capturing) {
-        Q_UNUSED(event)
+        if (KeyMapper::isModifierKey(event->key()) && !event->isAutoRepeat()) {
+            m_keyInfo = KeyInfo();
+            m_keyInfo.qtKey = event->key();
+            m_keyInfo.winVk = event->nativeVirtualKey() ? event->nativeVirtualKey() : KeyMapper::qtKeyToWinVk(event->key());
+            m_keyInfo.scanCode = event->nativeScanCode();
+            m_keyInfo.isExtended = (event->nativeScanCode() & 0x100) != 0;
+            m_keyInfo.displayName = KeyMapper::qtKeyToDisplayName(event->key());
+            finishCapture();
+            emit keyInfoChanged(m_keyInfo);
+        }
         return;
     }
     QLineEdit::keyReleaseEvent(event);
@@ -104,6 +122,7 @@ void KeyCaptureEdit::focusOutEvent(QFocusEvent* event)
 void KeyCaptureEdit::startCapture()
 {
     m_capturing = true;
+    HotkeyEdit::notifyCapture(true);
     setText("... 按下目标按键 ...");
     setStyleSheet("QLineEdit { color: #2196F3; font-weight: bold; }");
     setFocus();
@@ -112,6 +131,7 @@ void KeyCaptureEdit::startCapture()
 void KeyCaptureEdit::finishCapture()
 {
     m_capturing = false;
+    HotkeyEdit::notifyCapture(false);
     setStyleSheet("");
     updateDisplay();
 }

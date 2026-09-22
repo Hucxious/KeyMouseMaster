@@ -2,6 +2,7 @@
 #include "Logger.h"
 #include <QGuiApplication>
 #include <QScreen>
+#include <QLibrary>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -25,14 +26,16 @@ void WindowsDpiManager::initializeDpiSupport()
         typedef BOOL (WINAPI *SetProcessDpiAwarenessContextFunc)(DPI_AWARENESS_CONTEXT);
         auto pSetProcessDpiAwarenessContext =
             reinterpret_cast<SetProcessDpiAwarenessContextFunc>(
-                GetProcAddress(hUser32, "SetProcessDpiAwarenessContext"));
+                QLibrary::resolve("user32", "SetProcessDpiAwarenessContext"));
 
         if (pSetProcessDpiAwarenessContext) {
             // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-            pSetProcessDpiAwarenessContext(
-                reinterpret_cast<DPI_AWARENESS_CONTEXT>(-4));
-            LOG_INFO("已设置 Per-Monitor DPI Aware V2");
-            return;
+            if (pSetProcessDpiAwarenessContext(reinterpret_cast<DPI_AWARENESS_CONTEXT>(-4))) {
+                LOG_INFO("已设置 Per-Monitor DPI Aware V2");
+                return;
+            }
+            // manifest/Qt 已设置进程感知时不再尝试降低 DPI 模式。
+            if (GetLastError() == ERROR_ACCESS_DENIED) return;
         }
     }
 
@@ -42,7 +45,7 @@ void WindowsDpiManager::initializeDpiSupport()
         typedef HRESULT (WINAPI *SetProcessDpiAwarenessFunc)(PROCESS_DPI_AWARENESS);
         auto pSetProcessDpiAwareness =
             reinterpret_cast<SetProcessDpiAwarenessFunc>(
-                GetProcAddress(hShcore, "SetProcessDpiAwareness"));
+                QLibrary::resolve("shcore", "SetProcessDpiAwareness"));
 
         if (pSetProcessDpiAwareness) {
             // PROCESS_PER_MONITOR_DPI_AWARE = 2
@@ -57,8 +60,7 @@ void WindowsDpiManager::initializeDpiSupport()
     }
 
     // 方法3: 回退到 SetProcessDPIAware (Vista+)
-    SetProcessDPIAware();
-    LOG_INFO("已设置 System DPI Aware (回退模式)");
+    if (SetProcessDPIAware()) LOG_INFO("已设置 System DPI Aware (回退模式)");
 #else
     // 非Windows平台: 使用Qt的高DPI设置
     // 这些在 main.cpp 中通过 Qt 属性设置

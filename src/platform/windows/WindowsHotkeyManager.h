@@ -38,7 +38,11 @@ public:
 
     // Windows 原生事件过滤 (处理 WM_HOTKEY)
     bool nativeEventFilter(const QByteArray& eventType, void* message,
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
                            qintptr* result) override;
+#else
+                           long* result) override;
+#endif
 
     // 生成下一个可用ID
     int nextId() { return m_nextId++; }

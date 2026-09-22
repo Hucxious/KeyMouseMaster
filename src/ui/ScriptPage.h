@@ -19,6 +19,9 @@ class HotkeyEdit;
 class AppController;
 class SettingsManager;
 class ScriptEventTableModel;
+class QGridLayout;
+class QScrollArea;
+class QGroupBox;
 
 // ============================================================================
 // 脚本录制/回放分页
@@ -30,9 +33,17 @@ class ScriptPage : public QWidget
 public:
     explicit ScriptPage(AppController* controller, QWidget* parent = nullptr);
 
+    QSize recommendedPageSize() const;
     void loadSettings();
     void saveSettings();
     void setRunningState(bool running);
+
+    // 获取当前文档和设置 (供 MainWindow 启动录制/回放时使用)
+    ScriptDocument currentDocument() const { return m_document; }
+    void setDocument(const ScriptDocument& doc);
+    bool confirmDiscardChanges();
+    RecordingSettings recordingSettings() const;
+    PlaybackSettings playbackSettings() const;
 
 signals:
     void startRecordingRequested();
@@ -41,15 +52,17 @@ signals:
     void stopPlaybackRequested();
     void statusMessage(const QString& message);
 
-private slots:
-    void onNewScript();
+public slots:
     void onImportScript();
     void onSaveScript();
     void onSaveAsScript();
-    void onDeleteScript();
     void onStartRecording();
-    void onStopRecording();
     void onStartPlayback();
+
+private slots:
+    void onNewScript();
+    void onDeleteScript();
+    void onStopRecording();
     void onStopPlayback();
     void onDeleteSelectedEvents();
     void onToggleSelectedEvents();
@@ -60,7 +73,15 @@ private slots:
     void onRecentScriptSelected(const QModelIndex& index);
     void updateEventCount();
 
+protected:
+    void resizeEvent(QResizeEvent* event) override;
+
 private:
+    QGridLayout* m_configurationLayout;
+    QScrollArea* m_configurationScroll;
+    QWidget* m_configurationPanel;
+    QGroupBox* m_recordGroup;
+    QGroupBox* m_playbackGroup;
     void setupUI();
     void connectSignals();
     void enableEditingControls(bool enable);
@@ -70,7 +91,7 @@ private:
     SettingsManager* m_settings;
     ScriptEventTableModel* m_eventModel;
 
-    // 左侧：脚本管理
+    // 脚本管理与下半区元数据
     QLineEdit* m_scriptNameEdit;
     QTextEdit* m_scriptDescEdit;
     QListView* m_recentScriptList;
@@ -88,8 +109,7 @@ private:
     QCheckBox* m_recordKeyboardCheck;
     QSpinBox* m_moveMinIntervalSpinBox;
     QSpinBox* m_moveMinDistanceSpinBox;
-    HotkeyEdit* m_recordStartHotkeyEdit;
-    HotkeyEdit* m_recordStopHotkeyEdit;
+    HotkeyEdit* m_recordHotkeyEdit;
     QPushButton* m_recordStartBtn;
     QPushButton* m_recordStopBtn;
 
@@ -102,12 +122,11 @@ private:
     QCheckBox* m_restoreCursorCheckBox;
     QCheckBox* m_skipDisabledCheckBox;
     QComboBox* m_coordModeCombo;
-    HotkeyEdit* m_playbackStartHotkeyEdit;
-    HotkeyEdit* m_playbackStopHotkeyEdit;
+    HotkeyEdit* m_playbackHotkeyEdit;
     QPushButton* m_playbackStartBtn;
     QPushButton* m_playbackStopBtn;
 
-    // 右侧：事件表格
+    // 下半区：事件表格
     QTableView* m_eventTableView;
     QPushButton* m_deleteEventBtn;
     QPushButton* m_toggleEventBtn;

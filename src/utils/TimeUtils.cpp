@@ -2,10 +2,12 @@
 #include <QDateTime>
 #include <QThread>
 #include <QElapsedTimer>
+#include <chrono>
 
 int64_t TimeUtils::currentTimeMs()
 {
-    return QDateTime::currentMSecsSinceEpoch();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 int64_t TimeUtils::remainingWaitMs(int64_t targetTimeMs, int64_t startTimeMs, double speedFactor)

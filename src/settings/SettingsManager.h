@@ -18,6 +18,12 @@ public:
     explicit SettingsManager(QObject* parent = nullptr);
 
     // 窗口状态
+    bool windowMaximized() const;
+    void setWindowMaximized(bool value);
+    bool alwaysOnTop() const;
+    void setAlwaysOnTop(bool value);
+    bool statusBarVisible() const;
+    void setStatusBarVisible(bool value);
     QSize windowSize() const;
     void setWindowSize(const QSize& size);
     QPoint windowPosition() const;
@@ -52,6 +58,10 @@ public:
     void setMouseFixedPos(const QPoint& pos);
     QString mouseMonitorDevice() const;
     void setMouseMonitorDevice(const QString& device);
+    QPoint mouseMonitorPos() const;
+    void setMouseMonitorPos(const QPoint& pos);
+    KeyInfo keyboardKeyInfo() const;
+    void setKeyboardKeyInfo(const KeyInfo& info);
 
     // 键盘连点参数
     int keyboardInterval() const;
@@ -80,6 +90,10 @@ public:
     void setKeyboardStartHotkey(const HotkeyInfo& hk);
     HotkeyInfo keyboardStopHotkey() const;
     void setKeyboardStopHotkey(const HotkeyInfo& hk);
+    HotkeyInfo recordingHotkey() const;
+    void setRecordingHotkey(const HotkeyInfo& hk);
+    HotkeyInfo playbackHotkey() const;
+    void setPlaybackHotkey(const HotkeyInfo& hk);
 
     // 脚本
     QString scriptDefaultDir() const;
@@ -91,6 +105,9 @@ public:
     void setScriptPlaybackSpeed(double speed);
     int scriptRepeatCount() const;
     void setScriptRepeatCount(int count);
+
+    QVariantMap scriptOptions() const;
+    void setScriptOptions(const QVariantMap& options);
 
     // 系统托盘
     int trayCloseBehavior() const;
@@ -104,6 +121,12 @@ public:
 
     // 同步写入
     void sync();
+
+    // 检查快捷键冲突，返回冲突描述（为空表示无冲突）
+    QString checkHotkeyConflicts() const;
+
+    // 重置所有设置为默认值
+    void resetAll();
 
 signals:
     void settingsChanged();

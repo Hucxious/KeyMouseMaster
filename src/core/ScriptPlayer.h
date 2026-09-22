@@ -45,7 +45,7 @@ public:
     int currentEventIndex() const { return m_currentEventIndex.load(); }
     int totalEvents() const { return m_document.eventCount(); }
     int currentRound() const { return m_currentRound.load(); }
-    TaskState state() const { return m_state; }
+    TaskState state() const { return m_state.load(); }
 
 signals:
     void started();
@@ -63,8 +63,6 @@ private:
     bool playMouseEvent(const ScriptEvent& ev);
     bool playKeyboardEvent(const ScriptEvent& ev);
     bool resolvePlaybackCoordinate(const ScriptEvent& ev, QPoint& outVirtualPt);
-    int64_t calculateWaitTime(int currentEventIndex, int64_t startTimeMs,
-                               int64_t roundStartOffset);
 
     WindowsInputSimulator* m_simulator;
     MonitorManager* m_monitorMgr;
@@ -76,9 +74,13 @@ private:
     std::atomic_bool m_paused{false};
     std::atomic_int  m_currentEventIndex{0};
     std::atomic_int  m_currentRound{0};
-    TaskState m_state = TaskState::Idle;
+    std::atomic<TaskState> m_state{TaskState::Idle};
 
     QPoint m_playbackStartCursor;
+    QThread* m_workerThread = nullptr;
+    quint64 m_generation = 0;
+    QVector<MonitorInfo> m_monitors;
+    QRect m_desktopBounds;
 };
 
 #endif // SCRIPTPLAYER_H

@@ -1,6 +1,9 @@
 #include "KeyMapper.h"
 #include <QKeySequence>
 #include <Qt>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 bool KeyMapper::s_initialized = false;
 QVector<KeyMapper::KeyEntry> KeyMapper::s_keys;
@@ -59,7 +62,7 @@ void KeyMapper::initKeyTable()
     s_keys.append({Qt::Key_Control, 0x11, QStringLiteral("Ctrl"), true, false});
     s_keys.append({Qt::Key_Shift,   0x10, QStringLiteral("Shift"), true, false});
     s_keys.append({Qt::Key_Alt,     0x12, QStringLiteral("Alt"), true, false});
-    s_keys.append({Qt::Key_Meta,    0x5B, QStringLiteral("Win"), true, false});
+    s_keys.append({Qt::Key_Meta,    0x5B, QStringLiteral("Win"), true, true});
 
     // 标点符号
     s_keys.append({Qt::Key_Comma,     0xBC, QStringLiteral(","), false, false});
@@ -105,16 +108,12 @@ uint32_t KeyMapper::qtKeyToWinVk(int qtKey)
 
 uint32_t KeyMapper::qtKeyToScanCode(int qtKey)
 {
-    // 简化实现：使用 MapVirtualKey 需要在 Windows 上
-    // 这里提供一个基础映射
-    uint32_t vk = qtKeyToWinVk(qtKey);
-    if (vk == 0) return 0;
-
-    // 常见扫描码映射
-    if (vk >= 'A' && vk <= 'Z') return vk - 'A' + 0x1E;
-    if (vk >= '0' && vk <= '9') return vk - '0' + 0x0B;
-    // 对于精确扫描码，需要 Windows API
+#ifdef Q_OS_WIN
+    return MapVirtualKeyW(qtKeyToWinVk(qtKey), MAPVK_VK_TO_VSC);
+#else
+    Q_UNUSED(qtKey)
     return 0;
+#endif
 }
 
 QString KeyMapper::winVkToDisplayName(uint32_t vk, bool isExtended)

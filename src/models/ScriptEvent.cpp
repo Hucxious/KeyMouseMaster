@@ -1,5 +1,7 @@
 #include "ScriptEvent.h"
 #include <QJsonArray>
+#include <cmath>
+#include <limits>
 
 // ============================================================================
 // ScriptEvent 序列化到 JSON
@@ -44,9 +46,14 @@ ScriptEvent ScriptEvent::fromJson(const QJsonObject& obj, bool* ok)
     bool valid = true;
 
     auto getInt = [&](const QString& key, int defaultVal = 0) -> int {
-        if (obj.contains(key) && obj[key].isDouble())
-            return obj[key].toInt();
-        return defaultVal;
+        if (!obj.contains(key)) return defaultVal;
+        const auto value = obj[key];
+        const double number = value.toDouble();
+        if (!value.isDouble() || !std::isfinite(number) || std::floor(number) != number
+            || number < std::numeric_limits<int>::min() || number > std::numeric_limits<int>::max()) {
+            valid = false; return defaultVal;
+        }
+        return static_cast<int>(number);
     };
     auto getStr = [&](const QString& key, const QString& defaultVal = {}) -> QString {
         if (obj.contains(key) && obj[key].isString())
@@ -63,7 +70,10 @@ ScriptEvent ScriptEvent::fromJson(const QJsonObject& obj, bool* ok)
     if (typeInt < 0 || typeInt > 6) valid = false;
     ev.type = static_cast<ScriptEventType>(typeInt);
 
-    ev.timestampMs = getInt("timestamp_ms", 0);
+    const double stamp = obj["timestamp_ms"].toDouble(-1);
+    if (!std::isfinite(stamp) || stamp < 0 || stamp > 9007199254740991.0 || std::floor(stamp) != stamp)
+        valid = false;
+    ev.timestampMs = valid ? static_cast<int64_t>(stamp) : -1;
     if (ev.timestampMs < 0) valid = false;
 
     ev.eventIndex = getInt("index", 0);
@@ -91,13 +101,13 @@ ScriptEvent ScriptEvent::fromJson(const QJsonObject& obj, bool* ok)
     ev.keyDisplayName = getStr("key_display");
     ev.modifiersAtPress = static_cast<uint32_t>(getInt("modifiers_at_press", 0));
 
-    if (ok) *ok = valid;
+    if (ok) *ok = valid && ev.isValid();
     return ev;
 }
 
 bool ScriptEvent::isValid() const
 {
-    return !validationError().isEmpty() == false;
+    return validationError().isEmpty();
 }
 
 QString ScriptEvent::validationError() const
@@ -106,11 +116,17 @@ QString ScriptEvent::validationError() const
         return QString("无效的事件类型: %1").arg(static_cast<int>(type));
     if (timestampMs < 0)
         return "时间戳不能为负数";
+    if (timestampMs > 9007199254740991LL) return "时间戳超出 JSON 精确整数范围";
     if (isMouseEvent()) {
-        // 坐标允许负值，不做范围检查
+        if (mouseButton < MouseButton::Left || mouseButton > MouseButton::XButton2)
+            return "无效鼠标按钮";
+        if (!std::isfinite(monitorRatioPos.x()) || !std::isfinite(monitorRatioPos.y())
+            || monitorRatioPos.x() < 0 || monitorRatioPos.x() > 1
+            || monitorRatioPos.y() < 0 || monitorRatioPos.y() > 1)
+            return "无效显示器比例坐标";
     }
     if (isKeyboardEvent()) {
-        if (winVk == 0 && scanCode == 0)
+        if (winVk == 0 || winVk > 254)
             return "键盘事件缺少虚拟键码";
     }
     return {}; // 空字符串表示无错误

@@ -1,17 +1,56 @@
 #include "SettingsManager.h"
 #include <QStandardPaths>
 #include <QDir>
+#include "utils/KeyMapper.h"
+
+QPoint SettingsManager::mouseMonitorPos() const
+{
+    return m_settings.value("mouse/monitorPos", QPoint()).toPoint();
+}
+
+void SettingsManager::setMouseMonitorPos(const QPoint& pos)
+{
+    m_settings.setValue("mouse/monitorPos", pos);
+}
+
+KeyInfo SettingsManager::keyboardKeyInfo() const
+{
+    KeyInfo info;
+    info.qtKey = keyboardQtKey();
+    info.displayName = keyboardKeyDisplay();
+    info.winVk = m_settings.value("keyboard/winVk", KeyMapper::qtKeyToWinVk(info.qtKey)).toUInt();
+    info.scanCode = m_settings.value("keyboard/scanCode", 0).toUInt();
+    info.isExtended = m_settings.value("keyboard/extended", false).toBool();
+    info.hasCtrl = m_settings.value("keyboard/ctrl", false).toBool();
+    info.hasShift = m_settings.value("keyboard/shift", false).toBool();
+    info.hasAlt = m_settings.value("keyboard/alt", false).toBool();
+    info.hasWin = m_settings.value("keyboard/win", false).toBool();
+    return info;
+}
+
+void SettingsManager::setKeyboardKeyInfo(const KeyInfo& info)
+{
+    setKeyboardQtKey(info.qtKey);
+    setKeyboardKeyDisplay(info.displayName);
+    m_settings.setValue("keyboard/winVk", info.winVk);
+    m_settings.setValue("keyboard/scanCode", info.scanCode);
+    m_settings.setValue("keyboard/extended", info.isExtended);
+    m_settings.setValue("keyboard/ctrl", info.hasCtrl);
+    m_settings.setValue("keyboard/shift", info.hasShift);
+    m_settings.setValue("keyboard/alt", info.hasAlt);
+    m_settings.setValue("keyboard/win", info.hasWin);
+}
 
 SettingsManager::SettingsManager(QObject* parent)
     : QObject(parent)
-    , m_settings("KeyMouseMaster", "KeyMouseMaster")
+    , m_settings(QSettings::defaultFormat(), QSettings::UserScope, "KeyMouseMaster", "KeyMouseMaster")
 {
 }
 
 // ============ 窗口状态 ============
 QSize SettingsManager::windowSize() const
 {
-    return m_settings.value("window/size", QSize(900, 650)).toSize();
+    return m_settings.value("window/size", QSize()).toSize();
 }
 
 void SettingsManager::setWindowSize(const QSize& size)
@@ -224,12 +263,15 @@ void SettingsManager::setKeyboardInfinite(bool infinite)
 
 int SettingsManager::keyboardInputMode() const
 {
-    return m_settings.value("keyboard/inputMode", static_cast<int>(KeyInputMode::Normal)).toInt();
+    const int stored = m_settings.value("keyboard/inputMode", 0).toInt();
+    // 删除的模式（旧值 1..4）以及未知值统一按普通按键加载。
+    return stored == static_cast<int>(KeyInputMode::Hold) ? stored : static_cast<int>(KeyInputMode::Normal);
 }
 
 void SettingsManager::setKeyboardInputMode(int mode)
 {
-    m_settings.setValue("keyboard/inputMode", mode);
+    m_settings.setValue("keyboard/inputMode", mode == static_cast<int>(KeyInputMode::Hold)
+        ? mode : static_cast<int>(KeyInputMode::Normal));
 }
 
 int SettingsManager::keyboardQtKey() const
@@ -280,6 +322,11 @@ HotkeyInfo SettingsManager::hotkeyFromBytes(const QByteArray& data)
 
 HotkeyInfo SettingsManager::mouseStartHotkey() const
 {
+    if (!m_settings.contains("hotkey/mouseStart")) {
+        HotkeyInfo hk;
+        hk.key = Qt::Key_F7;
+        return hk;
+    }
     return hotkeyFromBytes(m_settings.value("hotkey/mouseStart").toByteArray());
 }
 
@@ -290,6 +337,11 @@ void SettingsManager::setMouseStartHotkey(const HotkeyInfo& hk)
 
 HotkeyInfo SettingsManager::mouseStopHotkey() const
 {
+    if (!m_settings.contains("hotkey/mouseStop")) {
+        HotkeyInfo hk;
+        hk.key = Qt::Key_F7;
+        return hk;
+    }
     return hotkeyFromBytes(m_settings.value("hotkey/mouseStop").toByteArray());
 }
 
@@ -300,6 +352,11 @@ void SettingsManager::setMouseStopHotkey(const HotkeyInfo& hk)
 
 HotkeyInfo SettingsManager::keyboardStartHotkey() const
 {
+    if (!m_settings.contains("hotkey/keyboardStart")) {
+        HotkeyInfo hk;
+        hk.key = Qt::Key_F8;
+        return hk;
+    }
     return hotkeyFromBytes(m_settings.value("hotkey/keyboardStart").toByteArray());
 }
 
@@ -310,12 +367,47 @@ void SettingsManager::setKeyboardStartHotkey(const HotkeyInfo& hk)
 
 HotkeyInfo SettingsManager::keyboardStopHotkey() const
 {
+    if (!m_settings.contains("hotkey/keyboardStop")) {
+        HotkeyInfo hk;
+        hk.key = Qt::Key_F8;
+        return hk;
+    }
     return hotkeyFromBytes(m_settings.value("hotkey/keyboardStop").toByteArray());
 }
 
 void SettingsManager::setKeyboardStopHotkey(const HotkeyInfo& hk)
 {
     m_settings.setValue("hotkey/keyboardStop", hotkeyToBytes(hk));
+}
+
+HotkeyInfo SettingsManager::recordingHotkey() const
+{
+    if (!m_settings.contains("hotkey/recording")) {
+        HotkeyInfo hk;
+        hk.key = Qt::Key_F9;
+        return hk;
+    }
+    return hotkeyFromBytes(m_settings.value("hotkey/recording").toByteArray());
+}
+
+void SettingsManager::setRecordingHotkey(const HotkeyInfo& hk)
+{
+    m_settings.setValue("hotkey/recording", hotkeyToBytes(hk));
+}
+
+HotkeyInfo SettingsManager::playbackHotkey() const
+{
+    if (!m_settings.contains("hotkey/playback")) {
+        HotkeyInfo hk;
+        hk.key = Qt::Key_F10;
+        return hk;
+    }
+    return hotkeyFromBytes(m_settings.value("hotkey/playback").toByteArray());
+}
+
+void SettingsManager::setPlaybackHotkey(const HotkeyInfo& hk)
+{
+    m_settings.setValue("hotkey/playback", hotkeyToBytes(hk));
 }
 
 // ============ 脚本 ============
@@ -369,6 +461,16 @@ void SettingsManager::setScriptRepeatCount(int count)
     m_settings.setValue("script/repeatCount", count);
 }
 
+QVariantMap SettingsManager::scriptOptions() const
+{
+    return m_settings.value("script/options").toMap();
+}
+
+void SettingsManager::setScriptOptions(const QVariantMap& options)
+{
+    m_settings.setValue("script/options", options);
+}
+
 // ============ 系统托盘 ============
 int SettingsManager::trayCloseBehavior() const
 {
@@ -404,7 +506,85 @@ void SettingsManager::setDefaultCoordinateMode(CoordinateMode mode)
     m_settings.setValue("general/defaultCoordMode", static_cast<int>(mode));
 }
 
+void SettingsManager::resetAll()
+{
+    m_settings.clear();
+    m_settings.sync();
+}
+
 void SettingsManager::sync()
 {
     m_settings.sync();
 }
+
+// ============================================================================
+// 快捷键冲突检测
+// ============================================================================
+QString SettingsManager::checkHotkeyConflicts() const
+{
+    struct NamedHotkey {
+        QString name;
+        HotkeyInfo hk;
+    };
+
+    QVector<NamedHotkey> hotkeys;
+
+    // 收集所有已配置的快捷键 (每个功能一个切换快捷键)
+    HotkeyInfo hkMouse = mouseStartHotkey();
+    if (hkMouse.isValid())
+        hotkeys.append({"鼠标连点", hkMouse});
+
+    HotkeyInfo hkKey = keyboardStartHotkey();
+    if (hkKey.isValid())
+        hotkeys.append({"键盘连点", hkKey});
+
+    HotkeyInfo hkRecording = recordingHotkey();
+    if (hkRecording.isValid())
+        hotkeys.append({"屏幕录制", hkRecording});
+
+    HotkeyInfo hkPlayback = playbackHotkey();
+    if (hkPlayback.isValid())
+        hotkeys.append({"脚本回放", hkPlayback});
+
+    // 紧急停止快捷键
+    HotkeyInfo hkEmerg;
+    hkEmerg.key = Qt::Key_F12;
+    hkEmerg.ctrl = true;
+    hkEmerg.shift = true;
+    hotkeys.append({"紧急停止 (Ctrl+Shift+F12)", hkEmerg});
+
+    // 检查两两冲突
+    for (int i = 0; i < hotkeys.size(); ++i) {
+        for (int j = i + 1; j < hotkeys.size(); ++j) {
+            const auto& a = hotkeys[i];
+            const auto& b = hotkeys[j];
+            if (a.hk.key == b.hk.key
+                && a.hk.ctrl == b.hk.ctrl
+                && a.hk.shift == b.hk.shift
+                && a.hk.alt == b.hk.alt
+                && a.hk.win == b.hk.win) {
+                return QString("快捷键冲突:\n\"%1\" 与 \"%2\"\n使用了相同的快捷键 %3\n请修改其中一个。")
+                    .arg(a.name)
+                    .arg(b.name)
+                    .arg(a.hk.toString());
+            }
+        }
+    }
+
+    return QString();  // 无冲突
+}
+
+bool SettingsManager::windowMaximized() const
+{ return m_settings.value("window/maximized", false).toBool(); }
+void SettingsManager::setWindowMaximized(bool value)
+{ m_settings.setValue("window/maximized", value); }
+
+bool SettingsManager::alwaysOnTop() const
+{ return m_settings.value("window/alwaysOnTop", false).toBool(); }
+void SettingsManager::setAlwaysOnTop(bool value)
+{ m_settings.setValue("window/alwaysOnTop", value); }
+
+bool SettingsManager::statusBarVisible() const
+{ return m_settings.value("window/statusBarVisible", true).toBool(); }
+void SettingsManager::setStatusBarVisible(bool value)
+{ m_settings.setValue("window/statusBarVisible", value); }

@@ -25,6 +25,7 @@ void MonitorManager::initialize()
 void MonitorManager::refresh()
 {
     QVector<MonitorInfo> oldMonitors = m_monitors;
+    const QRect oldBounds = m_virtualDesktopBounds;
 
     m_monitors = m_backend.enumerateMonitors();
     m_virtualDesktopBounds = m_backend.getVirtualDesktopBounds();
@@ -49,8 +50,15 @@ void MonitorManager::refresh()
         }
     }
 
-    if (oldMonitors.size() != m_monitors.size()
-        || oldNames != newNames) {
+    bool changed = oldMonitors.size() != m_monitors.size() || oldNames != newNames;
+    for (int i = 0; !changed && i < oldMonitors.size(); ++i) {
+        const auto& a = oldMonitors[i];
+        const auto& b = m_monitors[i];
+        changed = a.deviceName != b.deviceName || a.desktopRect != b.desktopRect
+            || a.isPrimary != b.isPrimary || a.scaleFactor != b.scaleFactor || a.dpi != b.dpi;
+    }
+    if (oldBounds != m_virtualDesktopBounds) emit virtualDesktopChanged(m_virtualDesktopBounds);
+    if (changed) {
         emit monitorsChanged();
         LOG_INFO("显示器配置已更新");
     }
@@ -76,7 +84,7 @@ MonitorInfo MonitorManager::monitorByName(const QString& deviceName) const
 
 MonitorInfo MonitorManager::currentCursorMonitor() const
 {
-    return m_backend.getCurrentCursorMonitor();
+    return monitorAtPoint(currentCursorPos());
 }
 
 QPoint MonitorManager::currentCursorPos() const
@@ -158,7 +166,8 @@ void MonitorManager::disconnectQtScreenSignals()
 
 void MonitorManager::onQtScreenAdded(QScreen* screen)
 {
-    Q_UNUSED(screen)
+    connect(screen, &QScreen::geometryChanged, this, &MonitorManager::onQtScreenGeometryChanged);
+    connect(screen, &QScreen::logicalDotsPerInchChanged, this, [this](qreal) { refresh(); });
     refresh();
 }
 

@@ -30,10 +30,6 @@ namespace ValidationUtils
     // 校验播放速度
     bool validatePlaybackSpeed(double speed, QString* errorMsg = nullptr);
 
-    // 校验按压时长 < 按键间隔 (完整按键模式)
-    bool validatePressVsInterval(int pressDuration, int intervalMs,
-                                  QString* errorMsg = nullptr);
-
     // 校验热键有效性
     bool validateHotkey(int key, QString* errorMsg = nullptr);
 

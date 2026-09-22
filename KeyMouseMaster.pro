@@ -9,6 +9,7 @@ TARGET = KeyMouseMaster
 
 # Windows-specific configuration
 win32 {
+    DEFINES += NOMINMAX WIN32_LEAN_AND_MEAN
     LIBS += -luser32 -lshell32 -lshcore
     RC_ICONS = resources/icons/app.ico
     # QMAKE_LFLAGS += /MANIFESTUAC:\"level=\'requireAdministrator\' uiAccess=\'false\'\"  # MSVC only
@@ -22,16 +23,18 @@ DEFINES += APP_VERSION=\\\"1.0.0\\\"
 # Debug/Release output directories
 CONFIG(debug, debug|release) {
     TARGET = KeyMouseMaster_d
-    DESTDIR = $$PWD/build/debug
-    OBJECTS_DIR = $$PWD/build/debug/obj
-    MOC_DIR = $$PWD/build/debug/moc
-    RCC_DIR = $$PWD/build/debug/rcc
+    DESTDIR = $$OUT_PWD/debug
+    OBJECTS_DIR = $$OUT_PWD/debug/obj
+    MOC_DIR = $$OUT_PWD/debug/moc
+    RCC_DIR = $$OUT_PWD/debug/rcc
 } else {
-    DESTDIR = $$PWD/build/release
-    OBJECTS_DIR = $$PWD/build/release/obj
-    MOC_DIR = $$PWD/build/release/moc
-    RCC_DIR = $$PWD/build/release/rcc
+    DESTDIR = $$OUT_PWD/release
+    OBJECTS_DIR = $$OUT_PWD/release/obj
+    MOC_DIR = $$OUT_PWD/release/moc
+    RCC_DIR = $$OUT_PWD/release/rcc
 }
+
+win32-msvc*: QMAKE_CXXFLAGS += /utf-8
 
 INCLUDEPATH += \
     $$PWD/src \
@@ -120,6 +123,7 @@ HEADERS += \
 
 # UI
 SOURCES += \
+    src/ui/AboutDialog.cpp \
     src/ui/MainWindow.cpp \
     src/ui/MouseClickPage.cpp \
     src/ui/KeyboardClickPage.cpp \
@@ -129,6 +133,7 @@ SOURCES += \
     src/ui/MonitorPreviewWidget.cpp
 
 HEADERS += \
+    src/ui/AboutDialog.h \
     src/ui/MainWindow.h \
     src/ui/MouseClickPage.h \
     src/ui/KeyboardClickPage.h \
@@ -149,3 +154,15 @@ win32 {
     target.path = $$PWD/install
     INSTALLS += target
 }
+
+# Offline help is an explicit dependency, so documentation-only edits are deployed too.
+help_file.target = $$DESTDIR/docs/user-guide.html
+help_file.depends = $$PWD/docs/user-guide.html
+help_file.commands = if not exist $$shell_quote($$shell_path($$DESTDIR/docs)) mkdir $$shell_quote($$shell_path($$DESTDIR/docs))
+help_file.commands += $$escape_expand(\n\t) $$QMAKE_COPY $$shell_quote($$shell_path($$PWD/docs/user-guide.html)) $$shell_quote($$shell_path($$help_file.target))
+QMAKE_EXTRA_TARGETS += help_file
+PRE_TARGETDEPS += $$help_file.target
+
+help_install.files = $$PWD/docs/user-guide.html
+help_install.path = $$target.path/docs
+INSTALLS += help_install

@@ -206,13 +206,11 @@ void MouseClickPage::setupUI()
 
     leftLayout->addWidget(execGroup);
 
-    // 快捷键
+    // 快捷键 (切换模式: 按一次启动, 再按一次停止)
     auto* hotkeyGroup = new QGroupBox("快捷键");
     auto* hotkeyLayout = new QFormLayout(hotkeyGroup);
     m_startHotkeyEdit = new HotkeyEdit();
-    m_stopHotkeyEdit = new HotkeyEdit();
-    hotkeyLayout->addRow("启动快捷键:", m_startHotkeyEdit);
-    hotkeyLayout->addRow("停止快捷键:", m_stopHotkeyEdit);
+    hotkeyLayout->addRow("启动/停止:", m_startHotkeyEdit);
     leftLayout->addWidget(hotkeyGroup);
 
     // 操作按钮
@@ -256,6 +254,8 @@ void MouseClickPage::setupUI()
 // ============================================================================
 void MouseClickPage::connectSignals()
 {
+    connect(m_controller->monitorManager(), &MonitorManager::monitorsChanged,
+            this, &MouseClickPage::updateMonitorList);
     connect(m_startBtn, &QPushButton::clicked, this, &MouseClickPage::onStartClicked);
     connect(m_stopBtn, &QPushButton::clicked, this, &MouseClickPage::onStopClicked);
     connect(m_getPosBtn, &QPushButton::clicked, this, &MouseClickPage::onGetCursorPos);
@@ -270,6 +270,22 @@ void MouseClickPage::connectSignals()
     connect(m_infiniteCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
         m_repeatCountSpinBox->setEnabled(!checked);
     });
+
+    // 快捷键变更时立刻保存并检测冲突 (冲突时恢复原值)
+    connect(m_startHotkeyEdit, &HotkeyEdit::hotkeyChanged, this, [this](const HotkeyInfo& hk) {
+        HotkeyInfo oldHk = m_settings->mouseStartHotkey();
+        m_settings->setMouseStartHotkey(hk);
+        QString conflict = m_settings->checkHotkeyConflicts();
+        if (!conflict.isEmpty()) {
+            // 恢复原来的快捷键
+            m_settings->setMouseStartHotkey(oldHk);
+            m_startHotkeyEdit->blockSignals(true);
+            m_startHotkeyEdit->setHotkey(oldHk);
+            m_startHotkeyEdit->blockSignals(false);
+            QMessageBox::warning(this, "快捷键冲突",
+                conflict + "\n\n已恢复为原来的快捷键。");
+        }
+    });
 }
 
 // ============================================================================
@@ -277,6 +293,7 @@ void MouseClickPage::connectSignals()
 // ============================================================================
 void MouseClickPage::loadSettings()
 {
+    m_loading = true;
     m_buttonCombo->setCurrentIndex(m_settings->mouseButton());
     m_modeCombo->setCurrentIndex(m_settings->mouseClickMode());
     m_intervalSpinBox->setValue(m_settings->mouseClickInterval());
@@ -297,13 +314,17 @@ void MouseClickPage::loadSettings()
     m_fixedYEdit->setText(QString::number(fixedPos.y()));
 
     m_startHotkeyEdit->setHotkey(m_settings->mouseStartHotkey());
-    m_stopHotkeyEdit->setHotkey(m_settings->mouseStopHotkey());
 
     updateMonitorList();
+    const auto internal = m_settings->mouseMonitorPos();
+    m_monitorXEdit->setText(QString::number(internal.x()));
+    m_monitorYEdit->setText(QString::number(internal.y()));
+    m_loading = false;
 }
 
 void MouseClickPage::saveSettings()
 {
+    if (m_loading) return;
     m_settings->setMouseButton(m_buttonCombo->currentIndex());
     m_settings->setMouseClickMode(m_modeCombo->currentIndex());
     m_settings->setMouseClickInterval(m_intervalSpinBox->value());
@@ -318,8 +339,9 @@ void MouseClickPage::saveSettings()
         static_cast<CoordinateMode>(m_coordModeCombo->currentIndex()));
     m_settings->setMouseFixedPos(QPoint(
         m_fixedXEdit->text().toInt(), m_fixedYEdit->text().toInt()));
+    m_settings->setMouseMonitorDevice(m_monitorCombo->currentData().toString());
+    m_settings->setMouseMonitorPos(QPoint(m_monitorXEdit->text().toInt(), m_monitorYEdit->text().toInt()));
     m_settings->setMouseStartHotkey(m_startHotkeyEdit->hotkey());
-    m_settings->setMouseStopHotkey(m_stopHotkeyEdit->hotkey());
     m_settings->sync();
 }
 
@@ -329,7 +351,7 @@ void MouseClickPage::saveSettings()
 void MouseClickPage::onStartClicked()
 {
     saveSettings();
-    validateAndUpdate();
+    if (!validateAndUpdate()) return;
     emit startRequested();
 }
 
@@ -416,6 +438,7 @@ void MouseClickPage::updateMonitorList()
 
 void MouseClickPage::setRunningState(bool running)
 {
+    m_startHotkeyEdit->setEnabled(!running);
     m_startBtn->setEnabled(!running);
     m_stopBtn->setEnabled(running);
 
@@ -425,7 +448,7 @@ void MouseClickPage::setRunningState(bool running)
     m_coordModeCombo->setEnabled(!running);
     m_intervalSpinBox->setEnabled(!running);
     m_intervalUnitCombo->setEnabled(!running);
-    m_repeatCountSpinBox->setEnabled(!running);
+    m_repeatCountSpinBox->setEnabled(!running && !m_infiniteCheckBox->isChecked());
     m_infiniteCheckBox->setEnabled(!running);
 
     if (running) {
@@ -454,20 +477,20 @@ void MouseClickPage::updateCursorInfo()
     m_monitorPreview->setCurrentCursorPos(pos);
 }
 
-void MouseClickPage::validateAndUpdate()
+bool MouseClickPage::validateAndUpdate()
 {
     // 校验参数
     QString error;
     int intervalMs = m_intervalSpinBox->value();
 
-    if (!ValidationUtils::validateClickInterval(intervalMs, 1, &error)) {
+    if (!ValidationUtils::validateClickInterval(intervalMs, m_intervalUnitCombo->currentData().toInt(), &error)) {
         emit statusMessage(error);
-        return;
+        return false;
     }
     if (!m_infiniteCheckBox->isChecked()
         && !ValidationUtils::validateRepeatCount(m_repeatCountSpinBox->value(), false, &error)) {
         emit statusMessage(error);
-        return;
+        return false;
     }
 
     // 固定坐标模式检查坐标
@@ -477,7 +500,8 @@ void MouseClickPage::validateAndUpdate()
         int y = m_fixedYEdit->text().toInt();
         if (!ValidationUtils::validateCoordinate(x, y, &error)) {
             emit statusMessage(error);
-            return;
+            return false;
         }
     }
+    return true;
 }

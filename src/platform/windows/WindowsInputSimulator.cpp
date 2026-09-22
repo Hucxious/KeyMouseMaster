@@ -1,6 +1,7 @@
 #include "WindowsInputSimulator.h"
 #include "AppTypes.h"
 #include "Logger.h"
+#include "core/CoordinateMapper.h"
 #include <QThread>
 
 #ifdef Q_OS_WIN
@@ -46,18 +47,9 @@ bool WindowsInputSimulator::mouseMoveAbsolute(int virtualDesktopX, int virtualDe
         virtualDesktopHeight = virtH;
     }
 
-    // 计算归一化坐标
-    // 减去虚拟桌面原点，映射到 [0, 65535]
-    int64_t normX = (static_cast<int64_t>(virtualDesktopX) - virtualLeft) * 65535
-                    / (virtualDesktopWidth - 1);
-    int64_t normY = (static_cast<int64_t>(virtualDesktopY) - virtualTop) * 65535
-                    / (virtualDesktopHeight - 1);
-
-    // 边界裁剪
-    if (normX < 0) normX = 0;
-    if (normX > 65535) normX = 65535;
-    if (normY < 0) normY = 0;
-    if (normY > 65535) normY = 65535;
+    int normX = 0, normY = 0;
+    CoordinateMapper::virtualToWindowsAbsolute(QPoint(virtualDesktopX, virtualDesktopY),
+        QRect(virtualLeft, virtualTop, virtualDesktopWidth, virtualDesktopHeight), normX, normY);
 
     INPUT input = {};
     input.type = INPUT_MOUSE;
@@ -133,7 +125,8 @@ bool WindowsInputSimulator::mouseDown(MouseButton button)
 
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_pressedMouseButtons.append(static_cast<uint32_t>(button));
+        if (!m_pressedMouseButtons.contains(static_cast<uint32_t>(button)))
+            m_pressedMouseButtons.append(static_cast<uint32_t>(button));
     }
     return true;
 #else
@@ -261,6 +254,8 @@ bool WindowsInputSimulator::keyDown(uint32_t winVk, bool isExtended)
     }
 
     trackKeyDown(winVk);
+    { std::lock_guard<std::mutex> lock(m_mutex);
+      if (isExtended) m_extendedKeys.insert(winVk); }
     return true;
 #else
     Q_UNUSED(winVk); Q_UNUSED(isExtended);
@@ -340,16 +335,25 @@ void WindowsInputSimulator::releaseAllInputs()
     {
         std::lock_guard<std::mutex> lock(m_mutex);
 
+        QVector<uint32_t> failedKeys, failedButtons;
         // 释放键盘按键
         for (uint32_t vk : m_pressedKeys) {
             INPUT input = {};
             input.type = INPUT_KEYBOARD;
             input.ki.wVk = static_cast<WORD>(vk);
             input.ki.dwFlags = KEYEVENTF_KEYUP;
+            if (m_extendedKeys.contains(vk)) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
             input.ki.dwExtraInfo = APP_EXTRA_INFO;
-            SendInput(1, &input, sizeof(INPUT));
+            if (SendInput(1, &input, sizeof(INPUT)) != 1) {
+                failedKeys.append(vk);
+                LOG_ERROR("键盘状态释放失败 (SendInput)");
+            }
         }
-        m_pressedKeys.clear();
+        m_pressedKeys = failedKeys;
+        for (auto it = m_extendedKeys.begin(); it != m_extendedKeys.end();) {
+            if (!failedKeys.contains(*it)) it = m_extendedKeys.erase(it);
+            else ++it;
+        }
 
         // 释放鼠标按钮
         for (uint32_t btn : m_pressedMouseButtons) {
@@ -367,17 +371,22 @@ void WindowsInputSimulator::releaseAllInputs()
             input.mi.dwFlags = flag;
             input.mi.mouseData = data;
             input.mi.dwExtraInfo = APP_EXTRA_INFO;
-            SendInput(1, &input, sizeof(INPUT));
+            if (SendInput(1, &input, sizeof(INPUT)) != 1) {
+                failedButtons.append(btn);
+                LOG_ERROR("鼠标状态释放失败 (SendInput)");
+            }
         }
-        m_pressedMouseButtons.clear();
+        m_pressedMouseButtons = failedButtons;
     }
 
     // 额外释放常见修饰键 (安全措施)
     keyUp(VK_CONTROL);
     keyUp(VK_SHIFT);
     keyUp(VK_MENU);
-    keyUp(VK_LWIN);
-    keyUp(VK_RWIN);
+    keyUp(VK_LCONTROL); keyUp(VK_RCONTROL, true);
+    keyUp(VK_LSHIFT); keyUp(VK_RSHIFT);
+    keyUp(VK_LMENU); keyUp(VK_RMENU, true);
+    keyUp(VK_LWIN, true); keyUp(VK_RWIN, true);
 #endif
 }
 
@@ -404,6 +413,7 @@ void WindowsInputSimulator::trackKeyUp(uint32_t vk)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_pressedKeys.removeAll(vk);
+    m_extendedKeys.remove(vk);
 }
 
 bool WindowsInputSimulator::sendInputEvent(uint32_t type, uint32_t data1, uint32_t data2,

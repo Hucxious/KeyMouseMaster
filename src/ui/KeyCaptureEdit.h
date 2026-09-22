@@ -15,6 +15,7 @@ class KeyCaptureEdit : public QLineEdit
 
 public:
     explicit KeyCaptureEdit(QWidget* parent = nullptr);
+    ~KeyCaptureEdit() override;
 
     void setKeyInfo(const KeyInfo& info);
     KeyInfo keyInfo() const { return m_keyInfo; }

@@ -53,11 +53,12 @@ BOOL CALLBACK WindowsMonitorBackend::monitorEnumProc(HMONITOR hMonitor, HDC hdc,
                                                       LPRECT rect, LPARAM lParam)
 {
     Q_UNUSED(hdc)
+    Q_UNUSED(rect)
 
     auto* ctx = reinterpret_cast<MonitorEnumContext*>(lParam);
     QVector<MonitorInfo>* monitors = ctx->monitors;
 
-    MONITORINFOEXW mi;
+    MONITORINFOEXW mi = {};
     mi.cbSize = sizeof(MONITORINFOEXW);
     if (!GetMonitorInfoW(hMonitor, &mi)) {
         return TRUE;  // 继续枚举
@@ -77,7 +78,7 @@ BOOL CALLBACK WindowsMonitorBackend::monitorEnumProc(HMONITOR hMonitor, HDC hdc,
     info.index = ctx->index++;
 
     // 获取设备友好名称
-    DISPLAY_DEVICEW dd;
+    DISPLAY_DEVICEW dd = {};
     dd.cb = sizeof(DISPLAY_DEVICEW);
     if (EnumDisplayDevicesW(mi.szDevice, 0, &dd, 0)) {
         info.friendlyName = QString::fromWCharArray(dd.DeviceString);
@@ -153,7 +154,7 @@ QRect WindowsMonitorBackend::getVirtualDesktopBounds()
 MonitorInfo WindowsMonitorBackend::getCurrentCursorMonitor()
 {
 #ifdef Q_OS_WIN
-    POINT pt;
+    POINT pt = {};
     GetCursorPos(&pt);
     QPoint cursorPos(pt.x, pt.y);
     auto monitors = enumerateMonitors();
@@ -166,7 +167,7 @@ MonitorInfo WindowsMonitorBackend::getCurrentCursorMonitor()
 QPoint WindowsMonitorBackend::getCurrentCursorPos()
 {
 #ifdef Q_OS_WIN
-    POINT pt;
+    POINT pt = {};
     GetCursorPos(&pt);
     return QPoint(pt.x, pt.y);
 #else

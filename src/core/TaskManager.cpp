@@ -39,6 +39,12 @@ void TaskManager::setScriptPlayer(ScriptPlayer* player)
 {
     m_player = player;
     if (player) {
+        connect(player, &ScriptPlayer::stateChanged, this, [this](TaskState state) {
+            if (state == TaskState::Paused || state == TaskState::Playing) {
+                m_currentState = state;
+                emit taskStateChanged(state);
+            }
+        });
         connect(player, &ScriptPlayer::finished,
                 this, &TaskManager::onEngineFinished);
     }
@@ -83,6 +89,7 @@ bool TaskManager::tryStartTask(TaskState newState, QString* errorMsg)
     }
 
     m_currentState = newState;
+    locker.unlock(); // 信号槽可能同步回调 TaskManager，不能持锁发出。
     emit taskStateChanged(newState);
     return true;
 }
@@ -99,6 +106,11 @@ bool TaskManager::requestStartMouseClick(QString* errorMsg)
     LOG_INFO("启动鼠标连点任务");
     emit taskStarted("鼠标连点");
     m_mouseEngine->start();
+    if (!m_mouseEngine->isRunning()) {
+        onEngineFinished();
+        if (errorMsg) *errorMsg = "鼠标参数无效，启动失败";
+        return false;
+    }
     return true;
 }
 
@@ -114,6 +126,11 @@ bool TaskManager::requestStartKeyboardClick(QString* errorMsg)
     LOG_INFO("启动键盘连点任务");
     emit taskStarted("键盘连点");
     m_keyboardEngine->start();
+    if (!m_keyboardEngine->isRunning()) {
+        onEngineFinished();
+        if (errorMsg) *errorMsg = "键盘参数无效，启动失败";
+        return false;
+    }
     return true;
 }
 
@@ -132,6 +149,7 @@ bool TaskManager::requestStartRecording(const RecordingSettings& settings,
 
     if (!m_recorder->startRecording(settings)) {
         m_currentState = TaskState::Error;
+        emit taskStateChanged(m_currentState);
         if (errorMsg) *errorMsg = "启动录制失败";
         emit taskError("启动录制失败");
         return false;
@@ -156,14 +174,29 @@ bool TaskManager::requestStartPlayback(const ScriptDocument& doc,
     m_player->setDocument(doc);
     m_player->setPlaybackSettings(settings);
     m_player->start();
+    if (!m_player->isRunning()) {
+        onEngineFinished();
+        if (errorMsg) *errorMsg = "脚本或回放参数无效，启动失败";
+        return false;
+    }
     return true;
 }
 
 void TaskManager::requestStop()
 {
+    // 如果当前没有任务在运行，直接返回，避免状态被错误置为 Stopping
+    if (!isAnyTaskRunning()) {
+        LOG_INFO("请求停止：当前无运行任务，忽略");
+        return;
+    }
+
     LOG_INFO("请求停止当前任务");
 
-    switch (m_currentState) {
+    const TaskState previous = m_currentState;
+    // 录制停止会同步发出 finished，必须先进入 Stopping，避免覆盖 Idle。
+    m_currentState = TaskState::Stopping;
+    emit taskStateChanged(m_currentState);
+    switch (previous) {
     case TaskState::MouseClicking:
         if (m_mouseEngine) m_mouseEngine->requestStop();
         break;
@@ -181,8 +214,6 @@ void TaskManager::requestStop()
         break;
     }
 
-    m_currentState = TaskState::Stopping;
-    emit taskStateChanged(m_currentState);
 }
 
 void TaskManager::emergencyStop()
@@ -218,6 +249,7 @@ void TaskManager::onEngineFinished()
 {
     QMutexLocker locker(&m_stateMutex);
     m_currentState = TaskState::Idle;
+    locker.unlock();
     emit taskStateChanged(m_currentState);
     emit taskStopped();
 }

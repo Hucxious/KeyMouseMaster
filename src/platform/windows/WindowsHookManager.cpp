@@ -17,8 +17,6 @@ WindowsHookManager::WindowsHookManager(QObject* parent)
 {
     s_instance = this;
 
-    m_workerThread = new QThread(this);
-    m_workerThread->start();
 }
 
 WindowsHookManager::~WindowsHookManager()
@@ -29,8 +27,8 @@ WindowsHookManager::~WindowsHookManager()
     m_stopProcessing = true;
     m_rawEventCondition.wakeAll();
     if (m_workerThread) {
-        m_workerThread->quit();
-        m_workerThread->wait(3000);
+        m_workerThread->wait();
+        delete m_workerThread;
     }
     s_instance = nullptr;
 }
@@ -48,8 +46,11 @@ LRESULT CALLBACK WindowsHookManager::mouseHookProc(int nCode, WPARAM wParam, LPA
             return CallNextHookEx(nullptr, nCode, wParam, lParam);
         }
 
-        // 本软件窗口事件过滤在这里处理 (通过窗口检测)
-        // 在 convert 阶段做进一步过滤
+        if (s_instance->m_settings.ignoreOwnWindow && s_instance->m_ownHwnd) {
+            HWND hit = WindowFromPoint(pMouse->pt);
+            if (hit && GetAncestor(hit, GA_ROOT) == s_instance->m_ownHwnd)
+                return CallNextHookEx(nullptr, nCode, wParam, lParam);
+        }
 
         RawHookEvent raw;
         raw.rawType = RawHookEvent::Mouse;
@@ -62,10 +63,11 @@ LRESULT CALLBACK WindowsHookManager::mouseHookProc(int nCode, WPARAM wParam, LPA
 
         {
             QMutexLocker locker(&s_instance->m_rawQueueMutex);
-            s_instance->m_rawEventQueue.enqueue(raw);
+            if (s_instance->m_rawEventQueue.size() < AppConstants::MAX_SCRIPT_EVENTS)
+                s_instance->m_rawEventQueue.enqueue(raw);
         }
         s_instance->m_rawEventCondition.wakeOne();
-        emit s_instance->rawEventReady();
+        // 工作线程由条件变量唤醒，不在 Hook 回调中执行外部信号槽。
     }
     return CallNextHookEx(nullptr, nCode, wParam, lParam);
 }
@@ -81,6 +83,10 @@ LRESULT CALLBACK WindowsHookManager::keyboardHookProc(int nCode, WPARAM wParam, 
             return CallNextHookEx(nullptr, nCode, wParam, lParam);
         }
 
+        if (s_instance->m_settings.ignoreOwnWindow && s_instance->m_ownHwnd
+            && GetForegroundWindow() == s_instance->m_ownHwnd)
+            return CallNextHookEx(nullptr, nCode, wParam, lParam);
+
         RawHookEvent raw;
         raw.rawType = RawHookEvent::Keyboard;
         raw.timestampMs = TimeUtils::currentTimeMs();
@@ -91,10 +97,11 @@ LRESULT CALLBACK WindowsHookManager::keyboardHookProc(int nCode, WPARAM wParam, 
 
         {
             QMutexLocker locker(&s_instance->m_rawQueueMutex);
-            s_instance->m_rawEventQueue.enqueue(raw);
+            if (s_instance->m_rawEventQueue.size() < AppConstants::MAX_SCRIPT_EVENTS)
+                s_instance->m_rawEventQueue.enqueue(raw);
         }
         s_instance->m_rawEventCondition.wakeOne();
-        emit s_instance->rawEventReady();
+        // 工作线程由条件变量唤醒，不在 Hook 回调中执行外部信号槽。
     }
     return CallNextHookEx(nullptr, nCode, wParam, lParam);
 }
@@ -181,11 +188,12 @@ void WindowsHookManager::uninstallAllHooks()
     uninstallKeyboardHook();
 }
 
-void WindowsHookManager::startRecording(const RecordingSettings& settings)
+bool WindowsHookManager::startRecording(const RecordingSettings& settings)
 {
-    if (m_recording.load()) return;
+    if (m_recording.load()) return false;
 
     m_settings = settings;
+    m_ignoreSimulated = settings.ignoreSimulated;
     m_processedEvents.clear();
     m_rawEventQueue.clear();
     m_recordingStartTime = TimeUtils::currentTimeMs();
@@ -197,16 +205,24 @@ void WindowsHookManager::startRecording(const RecordingSettings& settings)
     bool needMouse = settings.recordMouseMove || settings.recordMouseClick || settings.recordWheel;
     bool needKeyboard = settings.recordKeyboard;
 
-    if (needMouse) installMouseHook();
-    if (needKeyboard) installKeyboardHook();
+    if ((!needMouse && !needKeyboard)
+        || (needMouse && !installMouseHook())
+        || (needKeyboard && !installKeyboardHook())) {
+        uninstallAllHooks();
+        return false;
+    }
 
     m_recording.store(true);
 
     // 启动事件处理 (在工作线程中运行)
-    QMetaObject::invokeMethod(this, "processRawEvents", Qt::QueuedConnection);
+    // this 属于 GUI 线程，invokeMethod(this) 不会切换线程。
+    // 回调留在安装钩子的消息线程，队列转换在独立线程中运行。
+    m_workerThread = QThread::create([this]() { processRawEvents(); });
+    m_workerThread->start();
 
     LOG_INFO("开始录制键鼠事件");
     emit recordingStarted();
+    return true;
 }
 
 void WindowsHookManager::stopRecording()
@@ -218,6 +234,13 @@ void WindowsHookManager::stopRecording()
 
     // 卸载钩子
     uninstallAllHooks();
+
+    // 卸载后不会再入队；等待队列排空后才能把文档交给录制器。
+    if (m_workerThread) {
+        m_workerThread->wait();
+        delete m_workerThread;
+        m_workerThread = nullptr;
+    }
 
     LOG_INFO(QString("停止录制，共 %1 个事件").arg(m_processedEvents.size()));
     emit recordingStopped();
@@ -253,7 +276,7 @@ void WindowsHookManager::processRawEvents()
     ScriptEvent lastMouseEvent; // 用于鼠标移动压缩
     bool hasLastMouse = false;
 
-    while (m_recording.load() || !m_rawEventQueue.isEmpty()) {
+    while (true) {
         RawHookEvent raw;
         {
             QMutexLocker locker(&m_rawQueueMutex);
@@ -286,9 +309,16 @@ void WindowsHookManager::processRawEvents()
             ev = convertKeyboardEvent(raw);
         }
 
-        if (ev.isValid()) {
-            ev.eventIndex = m_processedEvents.size();
+        if (ev.enabled && ev.isValid()) {
             QMutexLocker locker(&m_processedMutex);
+            if (m_processedEvents.size() >= AppConstants::MAX_SCRIPT_EVENTS) {
+                QMetaObject::invokeMethod(this, [this]() {
+                    emit hookError("录制达到事件上限，已停止");
+                    stopRecording();
+                }, Qt::QueuedConnection);
+                break;
+            }
+            ev.eventIndex = m_processedEvents.size();
             m_processedEvents.append(ev);
         }
     }
@@ -301,73 +331,73 @@ ScriptEvent WindowsHookManager::convertMouseEvent(const RawHookEvent& raw)
 
     switch (raw.mouseFlags) {
     case WM_MOUSEMOVE:
-        if (!m_settings.recordMouseMove) return {};
+        if (!m_settings.recordMouseMove) { ScriptEvent ignored; ignored.enabled = false; return ignored; }
         ev.type = ScriptEventType::MouseMove;
         ev.virtualDesktopPos = QPoint(raw.mouseX, raw.mouseY);
         ev.monitorInternalPos = QPoint(); // 后续由MonitorManager填充
         break;
     case WM_LBUTTONDOWN:
-        if (!m_settings.recordMouseClick) return {};
+        if (!m_settings.recordMouseClick) { ScriptEvent ignored; ignored.enabled = false; return ignored; }
         ev.type = ScriptEventType::MouseDown;
         ev.mouseButton = MouseButton::Left;
         ev.virtualDesktopPos = QPoint(raw.mouseX, raw.mouseY);
         break;
     case WM_LBUTTONUP:
-        if (!m_settings.recordMouseClick) return {};
+        if (!m_settings.recordMouseClick) { ScriptEvent ignored; ignored.enabled = false; return ignored; }
         ev.type = ScriptEventType::MouseUp;
         ev.mouseButton = MouseButton::Left;
         ev.virtualDesktopPos = QPoint(raw.mouseX, raw.mouseY);
         break;
     case WM_RBUTTONDOWN:
-        if (!m_settings.recordMouseClick) return {};
+        if (!m_settings.recordMouseClick) { ScriptEvent ignored; ignored.enabled = false; return ignored; }
         ev.type = ScriptEventType::MouseDown;
         ev.mouseButton = MouseButton::Right;
         ev.virtualDesktopPos = QPoint(raw.mouseX, raw.mouseY);
         break;
     case WM_RBUTTONUP:
-        if (!m_settings.recordMouseClick) return {};
+        if (!m_settings.recordMouseClick) { ScriptEvent ignored; ignored.enabled = false; return ignored; }
         ev.type = ScriptEventType::MouseUp;
         ev.mouseButton = MouseButton::Right;
         ev.virtualDesktopPos = QPoint(raw.mouseX, raw.mouseY);
         break;
     case WM_MBUTTONDOWN:
-        if (!m_settings.recordMouseClick) return {};
+        if (!m_settings.recordMouseClick) { ScriptEvent ignored; ignored.enabled = false; return ignored; }
         ev.type = ScriptEventType::MouseDown;
         ev.mouseButton = MouseButton::Middle;
         ev.virtualDesktopPos = QPoint(raw.mouseX, raw.mouseY);
         break;
     case WM_MBUTTONUP:
-        if (!m_settings.recordMouseClick) return {};
+        if (!m_settings.recordMouseClick) { ScriptEvent ignored; ignored.enabled = false; return ignored; }
         ev.type = ScriptEventType::MouseUp;
         ev.mouseButton = MouseButton::Middle;
         ev.virtualDesktopPos = QPoint(raw.mouseX, raw.mouseY);
         break;
     case WM_XBUTTONDOWN:
-        if (!m_settings.recordMouseClick) return {};
+        if (!m_settings.recordMouseClick) { ScriptEvent ignored; ignored.enabled = false; return ignored; }
         ev.type = ScriptEventType::MouseDown;
         ev.mouseButton = (HIWORD(raw.mouseData) == XBUTTON1) ? MouseButton::XButton1 : MouseButton::XButton2;
         ev.virtualDesktopPos = QPoint(raw.mouseX, raw.mouseY);
         break;
     case WM_XBUTTONUP:
-        if (!m_settings.recordMouseClick) return {};
+        if (!m_settings.recordMouseClick) { ScriptEvent ignored; ignored.enabled = false; return ignored; }
         ev.type = ScriptEventType::MouseUp;
         ev.mouseButton = (HIWORD(raw.mouseData) == XBUTTON1) ? MouseButton::XButton1 : MouseButton::XButton2;
         ev.virtualDesktopPos = QPoint(raw.mouseX, raw.mouseY);
         break;
     case WM_MOUSEWHEEL:
-        if (!m_settings.recordWheel) return {};
+        if (!m_settings.recordWheel) { ScriptEvent ignored; ignored.enabled = false; return ignored; }
         ev.type = ScriptEventType::MouseWheel;
         ev.wheelDelta = static_cast<int>(static_cast<SHORT>(HIWORD(raw.mouseData)));
         ev.virtualDesktopPos = QPoint(raw.mouseX, raw.mouseY);
         break;
     case WM_MOUSEHWHEEL:
-        if (!m_settings.recordWheel) return {};
+        if (!m_settings.recordWheel) { ScriptEvent ignored; ignored.enabled = false; return ignored; }
         ev.type = ScriptEventType::MouseHWheel;
         ev.wheelDelta = static_cast<int>(static_cast<SHORT>(HIWORD(raw.mouseData)));
         ev.virtualDesktopPos = QPoint(raw.mouseX, raw.mouseY);
         break;
     default:
-        return {};
+        { ScriptEvent ignored; ignored.enabled = false; return ignored; }
     }
 
     // 记录默认显示器信息 (由MonitorManager后续更新)
@@ -380,7 +410,7 @@ ScriptEvent WindowsHookManager::convertMouseEvent(const RawHookEvent& raw)
 
 ScriptEvent WindowsHookManager::convertKeyboardEvent(const RawHookEvent& raw)
 {
-    if (!m_settings.recordKeyboard) return {};
+    if (!m_settings.recordKeyboard) { ScriptEvent ignored; ignored.enabled = false; return ignored; }
 
     ScriptEvent ev;
     ev.timestampMs = raw.timestampMs - m_recordingStartTime;

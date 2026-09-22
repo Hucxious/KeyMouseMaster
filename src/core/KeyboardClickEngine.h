@@ -10,7 +10,7 @@ class WindowsInputSimulator;
 
 // ============================================================================
 // 键盘连点引擎
-// 在工作线程中运行，支持普通键、组合键、多种输入模式
+// 在工作线程中运行，支持普通按键与长按（均可携带修饰键）
 // ============================================================================
 class KeyboardClickEngine : public QObject
 {
@@ -58,7 +58,7 @@ public:
 
     int currentCount() const { return m_currentCount.load(); }
     int totalCount() const;
-    TaskState state() const { return m_state; }
+    TaskState state() const { return m_state.load(); }
 
 signals:
     void started();
@@ -71,12 +71,6 @@ signals:
 private:
     void runLoop();
     void executeKeyAction();
-    void sendNormalKey();       // 普通单键: 按下 -> 按压 -> 释放
-    void sendComboKey();        // 组合键: 修饰键按下 -> 主键按下 -> 主键释放 -> 修饰键逆序释放
-    void sendPressOnly();       // 仅按下
-    void sendReleaseOnly();     // 仅释放
-    void sendFullKey();         // 完整按键 (含前后延迟)
-    void sendHoldKey();         // 长按
     void releaseAllModifiers(); // 释放所有修饰键
 
     WindowsInputSimulator* m_simulator;
@@ -85,13 +79,16 @@ private:
     std::atomic_bool m_stopRequested{false};
     std::atomic_bool m_running{false};
     std::atomic_int  m_currentCount{0};
-    TaskState m_state = TaskState::Idle;
+    std::atomic<TaskState> m_state{TaskState::Idle};
 
     // 记录的修饰键状态，用于停止时释放
     std::atomic_bool m_ctrlDown{false};
     std::atomic_bool m_shiftDown{false};
     std::atomic_bool m_altDown{false};
     std::atomic_bool m_winDown{false};
+
+    QThread* m_workerThread = nullptr;
+    quint64 m_generation = 0;
 };
 
 #endif // KEYBOARDCLICKENGINE_H

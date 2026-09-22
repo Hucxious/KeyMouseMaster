@@ -43,7 +43,9 @@ QVariant ScriptEventTableModel::data(const QModelIndex& index, int role) const
             if (ev.type == ScriptEventType::MouseWheel || ev.type == ScriptEventType::MouseHWheel)
                 return QString("滚轮: %1").arg(ev.wheelDelta);
             return QVariant();
-        case ColEnabled:  return ev.enabled ? "是" : "否";
+        case ColEnabled:
+            if (role == Qt::EditRole) return ev.enabled;
+            return ev.enabled ? "是" : "否";
         }
     }
 
@@ -106,8 +108,10 @@ bool ScriptEventTableModel::setData(const QModelIndex& index, const QVariant& va
         changed = true;
         break;
     case ColTime: {
-        qint64 t = value.toLongLong();
-        if (t >= 0) { ev.timestampMs = t; changed = true; }
+        bool ok = false;
+        qint64 t = value.toLongLong(&ok);
+        if (ok && t >= 0 && (row == 0 || t >= m_document->events[row - 1].timestampMs)
+            && (row + 1 == m_document->eventCount() || t <= m_document->events[row + 1].timestampMs)) { ev.timestampMs = t; changed = true; }
         break;
     }
     }

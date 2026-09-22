@@ -73,8 +73,8 @@ QPoint CoordinateMapper::ratioToInternal(const QPointF& ratioPt,
     int w = monitor.desktopRect.width();
     int h = monitor.desktopRect.height();
 
-    return QPoint(qRound(ratioPt.x() * w),
-                  qRound(ratioPt.y() * h));
+    return QPoint(qBound(0, qRound(ratioPt.x() * w), qMax(0, w - 1)),
+                  qBound(0, qRound(ratioPt.y() * h), qMax(0, h - 1)));
 }
 
 // ============================================================================
@@ -122,6 +122,10 @@ bool CoordinateMapper::resolveTargetCoordinate(
         if (!monitor) {
             if (errorMsg)
                 *errorMsg = QString("找不到目标显示器: %1").arg(monitorDeviceName);
+            return false;
+        }
+        if (!QRect(QPoint(), monitor->desktopRect.size()).contains(monitorInternal)) {
+            if (errorMsg) *errorMsg = "显示器内坐标越界";
             return false;
         }
         outVirtualPt = monitor->internalToVirtual(monitorInternal);

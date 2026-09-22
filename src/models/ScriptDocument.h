@@ -64,6 +64,7 @@ public:
     void markModified();
 
 private:
+    bool parseJson(const QJsonObject& obj, QString* errorMsg);
     bool validateJsonStructure(const QJsonObject& obj, QString* errorMsg) const;
 };
 

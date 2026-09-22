@@ -33,15 +33,18 @@ signals:
     void stopRequested();
     void statusMessage(const QString& message);
 
-private slots:
+public slots:
     void onStartClicked();
+
+private slots:
     void onStopClicked();
     void onInputModeChanged(int index);
 
 private:
     void setupUI();
     void connectSignals();
-    void validateAndUpdate();
+    bool validateAndUpdate();
+    bool m_loading = false;
 
     AppController* m_controller;
     SettingsManager* m_settings;
@@ -62,9 +65,8 @@ private:
     QSpinBox* m_repeatCountSpinBox;
     QCheckBox* m_infiniteCheckBox;
 
-    // 快捷键
+    // 快捷键 (切换: 按一次启动, 再按一次停止)
     HotkeyEdit* m_startHotkeyEdit;
-    HotkeyEdit* m_stopHotkeyEdit;
 
     // 按钮
     QPushButton* m_startBtn;

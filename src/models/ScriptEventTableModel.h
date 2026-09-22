@@ -12,6 +12,7 @@ class ScriptEventTableModel : public QAbstractTableModel
     Q_OBJECT
 
 public:
+    using QAbstractTableModel::removeRows;
     enum Column {
         ColIndex = 0,
         ColTime,

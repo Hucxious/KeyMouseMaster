@@ -5,6 +5,26 @@
 #include <QJsonArray>
 #include <QFileInfo>
 #include <QDir>
+#include <QSet>
+#include <cmath>
+
+namespace {
+bool readCoordinateMode(const QJsonValue& value, CoordinateMode& mode)
+{
+    if (value.isUndefined()) { mode = CoordinateMode::MonitorRelative; return true; }
+    const QString text = value.toString();
+    const char* names[] = {"CurrentCursor", "VirtualDesktopAbsolute", "MonitorRelative", "MonitorRatio"};
+    for (int i = 0; i < 4; ++i) {
+        const auto candidate = static_cast<CoordinateMode>(i);
+        // 兼容现有 v1 文件的中文值和早期文档给出的英文值，不改变保存格式。
+        if (text == names[i] || text == QString::fromUtf8(coordinateModeToString(candidate))) {
+            mode = candidate; return true;
+        }
+    }
+    return false;
+}
+}
+
 
 ScriptDocument::ScriptDocument()
 {
@@ -75,6 +95,16 @@ QJsonObject ScriptDocument::toJson() const
 
 bool ScriptDocument::fromJson(const QJsonObject& obj, QString* errorMsg)
 {
+    // 解析失败保留当前文档，避免导入坏文件破坏未保存的编辑内容。
+    ScriptDocument parsed;
+    if (!parsed.parseJson(obj, errorMsg)) return false;
+    if (!parsed.events.isEmpty() && !parsed.isValid(errorMsg)) return false;
+    *this = parsed;
+    return true;
+}
+
+bool ScriptDocument::parseJson(const QJsonObject& obj, QString* errorMsg)
+{
     if (!validateJsonStructure(obj, errorMsg))
         return false;
 
@@ -83,11 +113,10 @@ bool ScriptDocument::fromJson(const QJsonObject& obj, QString* errorMsg)
     createdAt = QDateTime::fromString(obj["created_at"].toString(), Qt::ISODate);
     modifiedAt = QDateTime::fromString(obj["modified_at"].toString(), Qt::ISODate);
 
-    QString cmStr = obj["coordinate_mode"].toString();
-    if (cmStr == "CurrentCursor") coordinateMode = CoordinateMode::CurrentCursor;
-    else if (cmStr == "VirtualDesktopAbsolute") coordinateMode = CoordinateMode::VirtualDesktopAbsolute;
-    else if (cmStr == "MonitorRelative") coordinateMode = CoordinateMode::MonitorRelative;
-    else coordinateMode = CoordinateMode::MonitorRatio;
+    if (!readCoordinateMode(obj["coordinate_mode"], coordinateMode)) {
+        if (errorMsg) *errorMsg = "无效的坐标模式";
+        return false;
+    }
 
     // 桌面范围
     QJsonObject desktop = obj["desktop"].toObject();
@@ -126,6 +155,15 @@ bool ScriptDocument::fromJson(const QJsonObject& obj, QString* errorMsg)
     playbackSettings.restoreCursor   = pb["restore_cursor"].toBool(true);
     playbackSettings.skipDisabledEvents = pb["skip_disabled"].toBool(true);
 
+    if (!readCoordinateMode(pb["coordinate_mode"], playbackSettings.coordinateMode)
+        || !std::isfinite(playbackSettings.speedFactor) || playbackSettings.speedFactor < 0.1
+        || playbackSettings.speedFactor > 10 || playbackSettings.startDelayMs < 0
+        || playbackSettings.startDelayMs > 60000 || playbackSettings.repeatCount < 1
+        || playbackSettings.repeatCount > AppConstants::MAX_REPEAT_COUNT
+        || playbackSettings.roundIntervalMs < 0 || playbackSettings.roundIntervalMs > 3600000) {
+        if (errorMsg) *errorMsg = "无效的回放参数";
+        return false;
+    }
     // 事件
     events.clear();
     QJsonArray eventsArr = obj["events"].toArray();
@@ -135,8 +173,8 @@ bool ScriptDocument::fromJson(const QJsonObject& obj, QString* errorMsg)
         if (ok) {
             ev.eventIndex = i;
             events.append(ev);
-        } else if (errorMsg) {
-            *errorMsg = QString("事件 %1 数据无效").arg(i);
+        } else {
+            if (errorMsg) *errorMsg = QString("事件 %1 数据无效").arg(i);
             return false;
         }
     }
@@ -156,7 +194,12 @@ bool ScriptDocument::saveToFile(const QString& path, QString* errorMsg)
         return false;
     }
 
-    file.write(jsonDoc.toJson(QJsonDocument::Indented));
+    const QByteArray bytes = jsonDoc.toJson(QJsonDocument::Indented);
+    if (file.write(bytes) != bytes.size()) {
+        if (errorMsg) *errorMsg = QString("写入文件失败: %1").arg(file.errorString());
+        file.cancelWriting();
+        return false;
+    }
     if (!file.commit()) {
         if (errorMsg)
             *errorMsg = QString("写入文件失败: %1").arg(file.errorString());
@@ -177,6 +220,10 @@ bool ScriptDocument::loadFromFile(const QString& path, QString* errorMsg)
         return false;
     }
 
+    if (file.size() > 128 * 1024 * 1024) {
+        if (errorMsg) *errorMsg = "脚本文件超过 128 MiB 上限";
+        return false;
+    }
     QByteArray data = file.readAll();
     file.close();
 
@@ -213,6 +260,10 @@ bool ScriptDocument::isValid(QString* errorMsg) const
         return false;
     }
     for (int i = 0; i < events.size(); ++i) {
+        if (i > 0 && events[i].timestampMs < events[i - 1].timestampMs) {
+            if (errorMsg) *errorMsg = "事件时间戳必须按行非递减";
+            return false;
+        }
         QString evErr = events[i].validationError();
         if (!evErr.isEmpty()) {
             if (errorMsg) *errorMsg = QString("事件 %1: %2").arg(i).arg(evErr);
@@ -224,6 +275,10 @@ bool ScriptDocument::isValid(QString* errorMsg) const
 
 void ScriptDocument::clear()
 {
+    playbackSettings = PlaybackSettings();
+    recordingSettings = RecordingSettings();
+    coordinateMode = CoordinateMode::MonitorRelative;
+    virtualDesktopBounds = QRect();
     events.clear();
     name.clear();
     description.clear();
@@ -253,6 +308,7 @@ void ScriptDocument::removeEvent(int index)
 void ScriptDocument::moveEventUp(int index)
 {
     if (index > 0 && index < events.size()) {
+        std::swap(events[index].timestampMs, events[index - 1].timestampMs);
         events.swapItemsAt(index, index - 1);
         events[index].eventIndex = index;
         events[index - 1].eventIndex = index - 1;
@@ -263,6 +319,7 @@ void ScriptDocument::moveEventUp(int index)
 void ScriptDocument::moveEventDown(int index)
 {
     if (index >= 0 && index < events.size() - 1) {
+        std::swap(events[index].timestampMs, events[index + 1].timestampMs);
         events.swapItemsAt(index, index + 1);
         events[index].eventIndex = index;
         events[index + 1].eventIndex = index + 1;
@@ -284,7 +341,7 @@ bool ScriptDocument::validateMonitors(const QVector<MonitorInfo>& currentMonitor
     // 收集脚本中引用的显示器设备名
     QSet<QString> usedMonitors;
     for (const auto& ev : events) {
-        if (ev.isMouseEvent() && !ev.monitorDeviceName.isEmpty())
+        if (ev.enabled && ev.isMouseEvent() && !ev.monitorDeviceName.isEmpty())
             usedMonitors.insert(ev.monitorDeviceName);
     }
 
@@ -302,7 +359,7 @@ bool ScriptDocument::validateMonitors(const QVector<MonitorInfo>& currentMonitor
 
         // 在当前显示器中查找匹配
         for (const auto& cm : currentMonitors) {
-            if (cm.matches(scriptMonitor)) {
+            if (cm.deviceName == usedName) {
                 found = true;
                 break;
             }

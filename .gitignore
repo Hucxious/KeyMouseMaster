@@ -74,3 +74,6 @@ $RECYCLE.BIN/
 /tests/output/
 /temp/
 /tmp/
+# qmake root resources and rotated runtime logs
+/*_resource.rc
+*.log.old

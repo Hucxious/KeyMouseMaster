@@ -3,6 +3,7 @@
 
 #include <QString>
 #include <cstdint>
+#include <atomic>
 
 // ============================================================================
 // 时间工具
@@ -22,7 +23,7 @@ namespace TimeUtils
     QString formatTimestampMs(int64_t ms);
 
     // 高精度睡眠 (可被中断)，返回是否被提前唤醒
-    // 实际实现使用条件变量，这里声明接口
+    // 分段等待，每 10ms 检查停止标志，不阻塞 GUI 消息循环。
     bool interruptibleSleep(int64_t ms, const std::atomic_bool& stopFlag);
 }
 

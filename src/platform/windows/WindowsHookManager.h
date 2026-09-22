@@ -60,7 +60,7 @@ public:
     bool isKeyboardHookInstalled() const { return m_keyboardHookInstalled; }
 
     // 录制控制
-    void startRecording(const RecordingSettings& settings);
+    bool startRecording(const RecordingSettings& settings);
     void stopRecording();
     bool isRecording() const { return m_recording.load(); }
 

@@ -5,6 +5,7 @@
 #include "core/ScriptSerializer.h"
 #include "core/ScriptPlayer.h"
 #include "core/ScriptRecorder.h"
+#include "core/TaskManager.h"
 #include "settings/SettingsManager.h"
 #include "utils/ValidationUtils.h"
 #include "utils/TimeUtils.h"
@@ -14,13 +15,25 @@
 #include <QGridLayout>
 #include <QFormLayout>
 #include <QGroupBox>
-#include <QSplitter>
+#include <QResizeEvent>
 #include <QScrollArea>
 #include <QHeaderView>
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QStandardPaths>
+#include <QRegularExpression>
+
+namespace {
+// QScrollArea 默认会缓存子控件尺寸；配置重排后应使用当前布局提示。
+class ConfigurationScrollArea final : public QScrollArea {
+public:
+    QSize sizeHint() const override {
+        return widget() ? widget()->sizeHint() + QSize(2 * frameWidth(), 2 * frameWidth())
+                        : QScrollArea::sizeHint();
+    }
+};
+}
 
 ScriptPage::ScriptPage(AppController* controller, QWidget* parent)
     : QWidget(parent)
@@ -51,14 +64,10 @@ void ScriptPage::setupUI()
     statusLayout->addWidget(m_durationLabel);
     mainLayout->addLayout(statusLayout);
 
-    // 主分栏：左(管理) | 右(表格)
-    auto* splitter = new QSplitter(Qt::Horizontal);
-
-    // ---- 左侧面板 ----
-    auto* leftPanel = new QWidget();
-    auto* leftLayout = new QVBoxLayout(leftPanel);
-    leftLayout->setContentsMargins(0, 0, 4, 0);
-    leftLayout->setSpacing(3);
+    m_configurationPanel = new QWidget();
+    m_configurationLayout = new QGridLayout(m_configurationPanel);
+    m_configurationLayout->setContentsMargins(0, 0, 0, 0);
+    m_configurationLayout->setSpacing(6);
 
     // 脚本信息
     auto* infoGroup = new QGroupBox("脚本信息");
@@ -66,10 +75,9 @@ void ScriptPage::setupUI()
     m_scriptNameEdit = new QLineEdit("新建脚本");
     infoLayout->addRow("名称:", m_scriptNameEdit);
     m_scriptDescEdit = new QTextEdit();
-    m_scriptDescEdit->setMaximumHeight(45);
+    m_scriptDescEdit->setMaximumHeight(fontMetrics().lineSpacing() * 3);
     m_scriptDescEdit->setPlaceholderText("脚本说明...");
     infoLayout->addRow("说明:", m_scriptDescEdit);
-    leftLayout->addWidget(infoGroup);
 
     // 脚本操作
     auto* opsGroup = new QGroupBox("脚本操作");
@@ -81,10 +89,9 @@ void ScriptPage::setupUI()
     m_deleteBtn = new QPushButton("删除");
     opsLayout->addWidget(m_newBtn, 0, 0);
     opsLayout->addWidget(m_importBtn, 0, 1);
-    opsLayout->addWidget(m_saveBtn, 1, 0);
-    opsLayout->addWidget(m_saveAsBtn, 1, 1);
-    opsLayout->addWidget(m_deleteBtn, 2, 0);
-    leftLayout->addWidget(opsGroup);
+    opsLayout->addWidget(m_saveBtn, 0, 2);
+    opsLayout->addWidget(m_saveAsBtn, 0, 3);
+    opsLayout->addWidget(m_deleteBtn, 0, 4);
 
     // 最近脚本
     auto* recentGroup = new QGroupBox("最近脚本");
@@ -92,12 +99,12 @@ void ScriptPage::setupUI()
     m_recentScriptModel = new QStringListModel(this);
     m_recentScriptList = new QListView();
     m_recentScriptList->setModel(m_recentScriptModel);
-    m_recentScriptList->setMaximumHeight(70);
+    m_recentScriptList->setMaximumHeight(fontMetrics().lineSpacing() * 4);
+    m_recentScriptList->setMinimumWidth(0);
     recentLayout->addWidget(m_recentScriptList);
-    leftLayout->addWidget(recentGroup);
 
     // 录制设置
-    auto* recordGroup = new QGroupBox("录制设置");
+    auto* recordGroup = m_recordGroup = new QGroupBox("录制设置");
     auto* recordLayout = new QVBoxLayout(recordGroup);
     auto* checkGrid = new QGridLayout();
     m_recordMouseMoveCheck = new QCheckBox("录制鼠标移动");
@@ -132,11 +139,9 @@ void ScriptPage::setupUI()
     distOptsLayout->addWidget(m_moveMinDistanceSpinBox);
     recordLayout->addLayout(distOptsLayout);
 
-    m_recordStartHotkeyEdit = new HotkeyEdit();
-    m_recordStopHotkeyEdit = new HotkeyEdit();
+    m_recordHotkeyEdit = new HotkeyEdit();
     auto* recHotkeyLayout = new QFormLayout();
-    recHotkeyLayout->addRow("录制开始:", m_recordStartHotkeyEdit);
-    recHotkeyLayout->addRow("录制停止:", m_recordStopHotkeyEdit);
+    recHotkeyLayout->addRow("录制 开始/停止:", m_recordHotkeyEdit);
     recordLayout->addLayout(recHotkeyLayout);
 
     auto* recBtnLayout = new QHBoxLayout();
@@ -147,63 +152,65 @@ void ScriptPage::setupUI()
     m_recordStopBtn->setStyleSheet("QPushButton { background-color: #757575; color: white; font-weight: bold; } QPushButton:disabled { background-color: #cccccc; }");
     recBtnLayout->addWidget(m_recordStartBtn);
     recBtnLayout->addWidget(m_recordStopBtn);
-    recordLayout->addLayout(recBtnLayout);
-
-    leftLayout->addWidget(recordGroup);
 
     // 回放设置
-    auto* playbackGroup = new QGroupBox("回放设置");
-    auto* playbackLayout = new QFormLayout(playbackGroup);
+    auto* playbackGroup = m_playbackGroup = new QGroupBox("回放设置");
+    auto* playbackLayout = new QGridLayout(playbackGroup);
+    auto addPlaybackField = [playbackLayout](const QString& label, QWidget* field, int row, int col) {
+        auto* fieldLayout = new QVBoxLayout();
+        fieldLayout->setSpacing(2);
+        fieldLayout->addWidget(new QLabel(label));
+        field->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        fieldLayout->addWidget(field);
+        playbackLayout->addLayout(fieldLayout, row, col);
+    };
 
     m_speedCombo = new QComboBox();
-    m_speedCombo->setMinimumWidth(130);
     m_speedCombo->addItem("0.5x", 0.5);
     m_speedCombo->addItem("0.75x", 0.75);
     m_speedCombo->addItem("1.0x (原速)", 1.0);
     m_speedCombo->addItem("1.5x", 1.5);
     m_speedCombo->addItem("2.0x", 2.0);
-    playbackLayout->addRow("播放速度:", m_speedCombo);
+    addPlaybackField("播放速度:", m_speedCombo, 0, 0);
 
     m_playbackStartDelaySpinBox = new QSpinBox();
     m_playbackStartDelaySpinBox->setRange(0, 60000);
     m_playbackStartDelaySpinBox->setSuffix(" ms");
-    playbackLayout->addRow("启动延迟:", m_playbackStartDelaySpinBox);
+    addPlaybackField("启动延迟:", m_playbackStartDelaySpinBox, 0, 1);
 
-    auto* repeatLayout = new QHBoxLayout();
+    auto* repeatWidget = new QWidget();
+    auto* repeatLayout = new QHBoxLayout(repeatWidget);
+    repeatLayout->setContentsMargins(0, 0, 0, 0);
     m_repeatCountSpinBox = new QSpinBox();
     m_repeatCountSpinBox->setRange(1, 999999);
     m_repeatCountSpinBox->setValue(1);
     repeatLayout->addWidget(m_repeatCountSpinBox);
     m_infiniteRepeatCheckBox = new QCheckBox("无限");
     repeatLayout->addWidget(m_infiniteRepeatCheckBox);
-    repeatLayout->addStretch();
-    playbackLayout->addRow("重复次数:", repeatLayout);
+    addPlaybackField("重复次数:", repeatWidget, 1, 0);
 
     m_roundIntervalSpinBox = new QSpinBox();
     m_roundIntervalSpinBox->setRange(0, 3600000);
     m_roundIntervalSpinBox->setValue(1000);
     m_roundIntervalSpinBox->setSuffix(" ms");
-    playbackLayout->addRow("每轮间隔:", m_roundIntervalSpinBox);
+    addPlaybackField("每轮间隔:", m_roundIntervalSpinBox, 1, 1);
 
     m_restoreCursorCheckBox = new QCheckBox("恢复回放前鼠标位置");
     m_restoreCursorCheckBox->setChecked(true);
-    playbackLayout->addRow("", m_restoreCursorCheckBox);
+    playbackLayout->addWidget(m_restoreCursorCheckBox, 2, 0);
 
     m_skipDisabledCheckBox = new QCheckBox("跳过禁用事件");
     m_skipDisabledCheckBox->setChecked(true);
-    playbackLayout->addRow("", m_skipDisabledCheckBox);
+    playbackLayout->addWidget(m_skipDisabledCheckBox, 2, 1);
 
     m_coordModeCombo = new QComboBox();
-    m_coordModeCombo->setMinimumWidth(170);
     m_coordModeCombo->addItem("显示器相对坐标", static_cast<int>(CoordinateMode::MonitorRelative));
     m_coordModeCombo->addItem("虚拟桌面绝对坐标", static_cast<int>(CoordinateMode::VirtualDesktopAbsolute));
     m_coordModeCombo->addItem("显示器比例坐标", static_cast<int>(CoordinateMode::MonitorRatio));
-    playbackLayout->addRow("坐标模式:", m_coordModeCombo);
+    addPlaybackField("坐标模式:", m_coordModeCombo, 3, 0);
 
-    m_playbackStartHotkeyEdit = new HotkeyEdit();
-    m_playbackStopHotkeyEdit = new HotkeyEdit();
-    playbackLayout->addRow("回放开始:", m_playbackStartHotkeyEdit);
-    playbackLayout->addRow("回放停止:", m_playbackStopHotkeyEdit);
+    m_playbackHotkeyEdit = new HotkeyEdit();
+    addPlaybackField("回放 开始/停止:", m_playbackHotkeyEdit, 3, 1);
 
     auto* pbBtnLayout = new QHBoxLayout();
     m_playbackStartBtn = new QPushButton("▶ 开始回放");
@@ -213,22 +220,36 @@ void ScriptPage::setupUI()
     m_playbackStopBtn->setStyleSheet("QPushButton { background-color: #f44336; color: white; font-weight: bold; } QPushButton:disabled { background-color: #cccccc; }");
     pbBtnLayout->addWidget(m_playbackStartBtn);
     pbBtnLayout->addWidget(m_playbackStopBtn);
-    playbackLayout->addRow(pbBtnLayout);
 
-    leftLayout->addWidget(playbackGroup);
+    m_configurationLayout->addWidget(recordGroup, 0, 0);
+    m_configurationLayout->addWidget(playbackGroup, 0, 1);
+    m_configurationLayout->setColumnStretch(0, 2);
+    m_configurationLayout->setColumnStretch(1, 3);
+    m_configurationScroll = new ConfigurationScrollArea();
+    m_configurationScroll->setObjectName("scriptConfiguration");
+    m_configurationScroll->setFrameShape(QFrame::NoFrame);
+    m_configurationScroll->setWidget(m_configurationPanel);
+    m_configurationScroll->setWidgetResizable(true);
+    m_configurationScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
+    m_configurationScroll->setMinimumHeight(fontMetrics().lineSpacing() * 5);
+    mainLayout->addWidget(m_configurationScroll);
 
-    // 左侧面板放入滚动区域，窗口缩小时可滚动查看
-    auto* leftScrollArea = new QScrollArea();
-    leftScrollArea->setWidget(leftPanel);
-    leftScrollArea->setWidgetResizable(true);
-    leftScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    leftScrollArea->setFrameShape(QFrame::NoFrame);
+    // 运行按钮在滚动区外，小窗口也无需滚动寻找停止操作。
+    auto* controlGroup = new QGroupBox("运行控制");
+    controlGroup->setObjectName("scriptRunControls");
+    auto* controlLayout = new QHBoxLayout(controlGroup);
+    controlLayout->addLayout(recBtnLayout, 1);
+    controlLayout->addLayout(pbBtnLayout, 1);
+    mainLayout->addWidget(controlGroup);
+    mainLayout->addWidget(opsGroup);
 
-    // ---- 右侧面板：事件表格 ----
-    auto* rightPanel = new QWidget();
-    auto* rightLayout = new QVBoxLayout(rightPanel);
-    rightLayout->setContentsMargins(2, 0, 0, 0);
-    rightLayout->setSpacing(3);
+    auto* scriptGroup = new QGroupBox("脚本事件信息");
+    auto* rightLayout = new QVBoxLayout(scriptGroup);
+    rightLayout->setSpacing(6);
+    auto* metadataRow = new QHBoxLayout();
+    metadataRow->addWidget(infoGroup, 3);
+    metadataRow->addWidget(recentGroup, 2);
+    rightLayout->addLayout(metadataRow);
 
     // 表格工具栏
     auto* tableToolbar = new QHBoxLayout();
@@ -275,13 +296,43 @@ void ScriptPage::setupUI()
 
     rightLayout->addWidget(m_eventTableView, 1);
 
-    // 添加到分栏器
-    splitter->addWidget(leftScrollArea);
-    splitter->addWidget(rightPanel);
-    splitter->setStretchFactor(0, 2);
-    splitter->setStretchFactor(1, 3);
+    m_eventTableView->setObjectName("scriptEvents");
+    m_eventTableView->setMinimumHeight(fontMetrics().lineSpacing() * 4);
+    mainLayout->addWidget(scriptGroup, 1);
+    for (auto* group : {recordGroup, playbackGroup, controlGroup, opsGroup, infoGroup, recentGroup}) {
+        group->layout()->setContentsMargins(8, 8, 8, 6);
+        group->layout()->setSpacing(6);
+        group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    }
 
-    mainLayout->addWidget(splitter, 1);
+}
+
+QSize ScriptPage::recommendedPageSize() const
+{
+    // 隐藏页可能尚未经过 resizeEvent；直接取两组配置尺寸，避免用窄屏堆叠后的缓存。
+    const int width = m_recordGroup->sizeHint().width() + m_playbackGroup->sizeHint().width()
+        + m_configurationLayout->spacing() + 24;
+    const int configHeight = qMax(m_recordGroup->sizeHint().height(), m_playbackGroup->sizeHint().height()) + 2;
+    return QSize(qMax(width, minimumSizeHint().width()),
+                 qMax(sizeHint().height(), configHeight * 2 + 24));
+}
+
+void ScriptPage::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    // 根据控件的最小尺寸决定换行，不提高主窗口最小宽度。
+    const int requiredWidth = m_recordGroup->minimumSizeHint().width()
+        + m_playbackGroup->minimumSizeHint().width() + m_configurationLayout->spacing();
+    const bool stacked = width() - 24 < requiredWidth;
+    m_configurationLayout->removeWidget(m_playbackGroup);
+    m_configurationLayout->addWidget(m_playbackGroup, stacked ? 1 : 0, stacked ? 0 : 1);
+    m_configurationLayout->setColumnStretch(1, stacked ? 0 : 3);
+    m_configurationLayout->activate();
+    // 正常尺寸显示完整配置；高度不足时仅配置区滚动，表格获得剩余空间。
+    const int naturalHeight = m_configurationPanel->sizeHint().height() + 2;
+    m_configurationScroll->setMaximumHeight(qMax(fontMetrics().lineSpacing() * 5,
+        qMin(naturalHeight, height() / 2)));
+    m_configurationScroll->updateGeometry();
 }
 
 void ScriptPage::connectSignals()
@@ -314,12 +365,45 @@ void ScriptPage::connectSignals()
             this, &ScriptPage::onRecentScriptSelected);
 
     // 文档修改
-    connect(m_eventModel, &ScriptEventTableModel::documentModified,
-            this, &ScriptPage::updateEventCount);
+    connect(m_eventModel, &ScriptEventTableModel::documentModified, this, [this]() {
+        m_modified = true; updateEventCount();
+    });
+    connect(m_scriptNameEdit, &QLineEdit::textEdited, this, [this]() { m_modified = true; });
+    connect(m_scriptDescEdit, &QTextEdit::textChanged, this, [this]() { m_modified = true; });
 
     // 无限重复
     connect(m_infiniteRepeatCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
         m_repeatCountSpinBox->setEnabled(!checked);
+    });
+
+    // 快捷键变更时立刻保存并检测冲突 (冲突时恢复原值)
+    connect(m_recordHotkeyEdit, &HotkeyEdit::hotkeyChanged, this, [this](const HotkeyInfo& hk) {
+        HotkeyInfo oldHk = m_settings->recordingHotkey();
+        m_settings->setRecordingHotkey(hk);
+        QString conflict = m_settings->checkHotkeyConflicts();
+        if (!conflict.isEmpty()) {
+            // 恢复原来的快捷键
+            m_settings->setRecordingHotkey(oldHk);
+            m_recordHotkeyEdit->blockSignals(true);
+            m_recordHotkeyEdit->setHotkey(oldHk);
+            m_recordHotkeyEdit->blockSignals(false);
+            QMessageBox::warning(this, "快捷键冲突",
+                conflict + "\n\n已恢复为原来的快捷键。");
+        }
+    });
+    connect(m_playbackHotkeyEdit, &HotkeyEdit::hotkeyChanged, this, [this](const HotkeyInfo& hk) {
+        HotkeyInfo oldHk = m_settings->playbackHotkey();
+        m_settings->setPlaybackHotkey(hk);
+        QString conflict = m_settings->checkHotkeyConflicts();
+        if (!conflict.isEmpty()) {
+            // 恢复原来的快捷键
+            m_settings->setPlaybackHotkey(oldHk);
+            m_playbackHotkeyEdit->blockSignals(true);
+            m_playbackHotkeyEdit->setHotkey(oldHk);
+            m_playbackHotkeyEdit->blockSignals(false);
+            QMessageBox::warning(this, "快捷键冲突",
+                conflict + "\n\n已恢复为原来的快捷键。");
+        }
     });
 }
 
@@ -345,6 +429,7 @@ void ScriptPage::onNewScript()
 
 void ScriptPage::onImportScript()
 {
+    if (!confirmDiscardChanges()) return;
     QString defaultDir = m_settings->scriptDefaultDir();
     QString filePath = QFileDialog::getOpenFileName(this, "导入脚本", defaultDir,
         ScriptSerializer::fileFilter());
@@ -356,13 +441,12 @@ void ScriptPage::onImportScript()
         return;
     }
 
-    m_currentFilePath = filePath;
-    m_scriptNameEdit->setText(m_document.name);
-    m_scriptDescEdit->setText(m_document.description);
+    m_currentFilePath = m_document.filePath;
+    setDocument(m_document);
     m_modified = false;
     m_eventModel->refreshAll();
     updateEventCount();
-    m_settings->addRecentScript(filePath);
+    m_settings->addRecentScript(m_currentFilePath);
     refreshRecentScripts();
     emit statusMessage(QString("已导入: %1").arg(filePath));
 }
@@ -375,6 +459,7 @@ void ScriptPage::onSaveScript()
     }
 
     // 更新文档元数据
+    m_document.playbackSettings = playbackSettings();
     m_document.name = m_scriptNameEdit->text();
     m_document.description = m_scriptDescEdit->toPlainText();
 
@@ -394,11 +479,14 @@ void ScriptPage::onSaveAsScript()
 {
     QString defaultDir = m_settings->scriptDefaultDir();
     QString defaultName = m_scriptNameEdit->text();
+    // 录制标题含时间冒号，文档名称保留，默认文件名转换为 Windows 合法名称。
+    defaultName.replace(QRegularExpression(QStringLiteral("[<>:\"/\\\\|?*]")), "_");
     if (!defaultName.endsWith(".kms")) defaultName += ".kms";
     QString filePath = QFileDialog::getSaveFileName(this, "另存为",
         defaultDir + "/" + defaultName, ScriptSerializer::fileFilter());
     if (filePath.isEmpty()) return;
 
+    m_document.playbackSettings = playbackSettings();
     m_document.name = m_scriptNameEdit->text();
     m_document.description = m_scriptDescEdit->toPlainText();
 
@@ -408,9 +496,9 @@ void ScriptPage::onSaveAsScript()
         return;
     }
 
-    m_currentFilePath = filePath;
+    m_currentFilePath = m_document.filePath;
     m_modified = false;
-    m_settings->addRecentScript(filePath);
+    m_settings->addRecentScript(m_currentFilePath);
     m_settings->setScriptDefaultDir(QFileInfo(filePath).absolutePath());
     refreshRecentScripts();
     emit statusMessage(QString("已保存: %1").arg(filePath));
@@ -506,28 +594,30 @@ void ScriptPage::onClearAllEvents()
         "确定要清空所有事件吗？", QMessageBox::Yes | QMessageBox::No);
     if (ret != QMessageBox::Yes) return;
 
-    m_document.clear();
+    m_document.events.clear();
+    m_document.markModified();
+    m_modified = true;
     m_eventModel->refreshAll();
     updateEventCount();
 }
 
 void ScriptPage::onInsertWaitEvent()
 {
-    // 插入一个等待事件（当前实现为空的鼠标移动事件，仅用于延时）
-    QModelIndex current = m_eventTableView->currentIndex();
-    int row = current.isValid() ? current.row() + 1 : m_document.eventCount();
-
-    ScriptEvent ev;
-    ev.type = ScriptEventType::MouseMove;
-    ev.timestampMs = row > 0 ? m_document.events[row - 1].timestampMs + 1000 : 1000;
-    ev.enabled = true;
-
-    m_eventModel->insertEvent(row, ev);
+    // v1 无等待事件类型：顺延后续时间戳，不伪造会把鼠标移到原点的事件。
+    const QModelIndex current = m_eventTableView->currentIndex();
+    if (m_document.isEmpty()) return;
+    const int row = current.isValid() ? current.row() : 0;
+    for (int i = row; i < m_document.eventCount(); ++i)
+        m_document.events[i].timestampMs += 1000;
+    m_document.markModified();
+    m_modified = true;
+    m_eventModel->refreshAll();
     updateEventCount();
 }
 
 void ScriptPage::onRecentScriptSelected(const QModelIndex& index)
 {
+    if (!confirmDiscardChanges()) return;
     QString path = m_recentScriptModel->data(index, Qt::DisplayRole).toString();
     if (path.isEmpty()) return;
 
@@ -538,8 +628,7 @@ void ScriptPage::onRecentScriptSelected(const QModelIndex& index)
     }
 
     m_currentFilePath = path;
-    m_scriptNameEdit->setText(m_document.name);
-    m_scriptDescEdit->setText(m_document.description);
+    setDocument(m_document);
     m_modified = false;
     m_eventModel->refreshAll();
     updateEventCount();
@@ -565,7 +654,19 @@ void ScriptPage::updateEventCount()
 // ============================================================================
 void ScriptPage::loadSettings()
 {
-    m_playbackStartDelaySpinBox->setValue(m_settings->scriptPlaybackSpeed() > 0 ? 0 : 0);
+    const auto options = m_settings->scriptOptions();
+    m_playbackStartDelaySpinBox->setValue(options.value("startDelay", 0).toInt());
+    m_roundIntervalSpinBox->setValue(options.value("roundInterval", 1000).toInt());
+    m_infiniteRepeatCheckBox->setChecked(options.value("infinite", false).toBool());
+    m_restoreCursorCheckBox->setChecked(options.value("restoreCursor", true).toBool());
+    m_skipDisabledCheckBox->setChecked(options.value("skipDisabled", true).toBool());
+    m_coordModeCombo->setCurrentIndex(m_coordModeCombo->findData(options.value("coordMode", int(CoordinateMode::MonitorRelative))));
+    m_recordMouseMoveCheck->setChecked(options.value("recordMove", true).toBool());
+    m_recordMouseClickCheck->setChecked(options.value("recordClick", true).toBool());
+    m_recordWheelCheck->setChecked(options.value("recordWheel", true).toBool());
+    m_recordKeyboardCheck->setChecked(options.value("recordKeyboard", true).toBool());
+    m_moveMinIntervalSpinBox->setValue(options.value("moveInterval", 10).toInt());
+    m_moveMinDistanceSpinBox->setValue(options.value("moveDistance", 3).toInt());
     m_repeatCountSpinBox->setValue(m_settings->scriptRepeatCount());
 
     double speed = m_settings->scriptPlaybackSpeed();
@@ -576,14 +677,33 @@ void ScriptPage::loadSettings()
         }
     }
 
+    m_recordHotkeyEdit->setHotkey(m_settings->recordingHotkey());
+    m_playbackHotkeyEdit->setHotkey(m_settings->playbackHotkey());
+
     refreshRecentScripts();
 }
 
 void ScriptPage::saveSettings()
 {
+    m_settings->setScriptOptions({
+        {"startDelay", m_playbackStartDelaySpinBox->value()},
+        {"roundInterval", m_roundIntervalSpinBox->value()},
+        {"infinite", m_infiniteRepeatCheckBox->isChecked()},
+        {"restoreCursor", m_restoreCursorCheckBox->isChecked()},
+        {"skipDisabled", m_skipDisabledCheckBox->isChecked()},
+        {"coordMode", m_coordModeCombo->currentData()},
+        {"recordMove", m_recordMouseMoveCheck->isChecked()},
+        {"recordClick", m_recordMouseClickCheck->isChecked()},
+        {"recordWheel", m_recordWheelCheck->isChecked()},
+        {"recordKeyboard", m_recordKeyboardCheck->isChecked()},
+        {"moveInterval", m_moveMinIntervalSpinBox->value()},
+        {"moveDistance", m_moveMinDistanceSpinBox->value()}
+    });
     double speed = m_speedCombo->currentData().toDouble();
     m_settings->setScriptPlaybackSpeed(speed);
     m_settings->setScriptRepeatCount(m_repeatCountSpinBox->value());
+    m_settings->setRecordingHotkey(m_recordHotkeyEdit->hotkey());
+    m_settings->setPlaybackHotkey(m_playbackHotkeyEdit->hotkey());
     m_settings->sync();
 }
 
@@ -592,7 +712,9 @@ void ScriptPage::setRunningState(bool running)
     m_playbackStartBtn->setEnabled(!running);
     m_playbackStopBtn->setEnabled(running);
     m_recordStartBtn->setEnabled(!running);
-    // 录制停止按钮在录制期间始终可用
+    const TaskState state = m_controller->taskManager()->currentState();
+    m_recordStopBtn->setEnabled(running && state == TaskState::Recording);
+    m_playbackStopBtn->setEnabled(running && (state == TaskState::Playing || state == TaskState::Paused));
 
     // 运行期间禁用编辑
     enableEditingControls(!running);
@@ -606,8 +728,78 @@ void ScriptPage::setRunningState(bool running)
     }
 }
 
+bool ScriptPage::confirmDiscardChanges()
+{
+    if (!m_modified) return true;
+    return QMessageBox::question(this, "未保存的脚本", "当前脚本有未保存的修改，是否放弃修改？",
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+}
+
+void ScriptPage::setDocument(const ScriptDocument& doc)
+{
+    m_document = doc;
+    m_currentFilePath = doc.filePath;
+    const auto& pb = doc.playbackSettings;
+    m_playbackStartDelaySpinBox->setValue(pb.startDelayMs);
+    m_repeatCountSpinBox->setValue(pb.repeatCount);
+    m_infiniteRepeatCheckBox->setChecked(pb.infiniteRepeat);
+    m_roundIntervalSpinBox->setValue(pb.roundIntervalMs);
+    m_restoreCursorCheckBox->setChecked(pb.restoreCursor);
+    m_skipDisabledCheckBox->setChecked(pb.skipDisabledEvents);
+    m_coordModeCombo->setCurrentIndex(m_coordModeCombo->findData(static_cast<int>(pb.coordinateMode)));
+    const int speedIndex = m_speedCombo->findData(pb.speedFactor);
+    if (speedIndex >= 0) m_speedCombo->setCurrentIndex(speedIndex);
+    else {
+        m_speedCombo->addItem(QString("%1x").arg(pb.speedFactor), pb.speedFactor);
+        m_speedCombo->setCurrentIndex(m_speedCombo->count() - 1);
+    }
+    m_eventModel->setDocument(&m_document);
+    m_eventModel->refreshAll();
+    m_scriptNameEdit->setText(doc.name);
+    m_scriptDescEdit->setPlainText(doc.description);
+    m_modified = doc.filePath.isEmpty();
+    updateEventCount();
+}
+
+RecordingSettings ScriptPage::recordingSettings() const
+{
+    RecordingSettings settings;
+    settings.recordMouseMove  = m_recordMouseMoveCheck->isChecked();
+    settings.recordMouseClick = m_recordMouseClickCheck->isChecked();
+    settings.recordWheel      = m_recordWheelCheck->isChecked();
+    settings.recordKeyboard   = m_recordKeyboardCheck->isChecked();
+    settings.mouseMoveMinIntervalMs = m_moveMinIntervalSpinBox->value();
+    settings.mouseMoveMinDistance    = m_moveMinDistanceSpinBox->value();
+    settings.ignoreOwnWindow  = true;
+    settings.ignoreSimulated  = true;
+    settings.stopHotkey = m_settings->recordingHotkey();
+    return settings;
+}
+
+PlaybackSettings ScriptPage::playbackSettings() const
+{
+    PlaybackSettings settings;
+    settings.startDelayMs     = m_playbackStartDelaySpinBox->value();
+    settings.repeatCount      = m_repeatCountSpinBox->value();
+    settings.infiniteRepeat   = m_infiniteRepeatCheckBox->isChecked();
+    settings.roundIntervalMs  = m_roundIntervalSpinBox->value();
+    settings.speedFactor      = m_speedCombo->currentData().toDouble();
+    settings.restoreCursor    = m_restoreCursorCheckBox->isChecked();
+    settings.skipDisabledEvents = m_skipDisabledCheckBox->isChecked();
+    settings.coordinateMode   = static_cast<CoordinateMode>(m_coordModeCombo->currentData().toInt());
+    return settings;
+}
+
 void ScriptPage::enableEditingControls(bool enable)
 {
+    m_eventTableView->setEnabled(enable);
+    m_newBtn->setEnabled(enable);
+    m_importBtn->setEnabled(enable);
+    m_recentScriptList->setEnabled(enable);
+    m_saveBtn->setEnabled(enable);
+    m_saveAsBtn->setEnabled(enable);
+    m_recordHotkeyEdit->setEnabled(enable);
+    m_playbackHotkeyEdit->setEnabled(enable);
     m_deleteEventBtn->setEnabled(enable);
     m_toggleEventBtn->setEnabled(enable);
     m_moveUpBtn->setEnabled(enable);

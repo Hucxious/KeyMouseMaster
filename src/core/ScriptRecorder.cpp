@@ -4,6 +4,7 @@
 #include "core/CoordinateMapper.h"
 #include "utils/Logger.h"
 #include "utils/TimeUtils.h"
+#include "utils/KeyMapper.h"
 
 ScriptRecorder::ScriptRecorder(WindowsHookManager* hookManager,
                                  MonitorManager* monitorMgr,
@@ -41,7 +42,13 @@ bool ScriptRecorder::startRecording(const RecordingSettings& settings)
     emit stateChanged(m_state);
 
     // 启动钩子录制
-    m_hookManager->startRecording(settings);
+    if (!m_hookManager->startRecording(settings)) {
+        m_recording = false;
+        m_state = TaskState::Error;
+        emit stateChanged(m_state);
+        emit errorOccurred("无法安装录制钩子或未选择录制事件");
+        return false;
+    }
 
     LOG_INFO("脚本录制已启动");
     emit recordingStarted();
@@ -59,6 +66,7 @@ void ScriptRecorder::stopRecording()
 
 void ScriptRecorder::onHookRecordingStopped()
 {
+    m_recording = false;
     // 从钩子管理器获取录制的事件
     QVector<ScriptEvent> rawEvents = m_hookManager->takeRecordedEvents();
 
@@ -103,13 +111,14 @@ bool ScriptRecorder::hasEvents() const
 // ============================================================================
 void ScriptRecorder::enrichEventsWithMonitorInfo(QVector<ScriptEvent>& events)
 {
-    const auto& monitors = m_monitorMgr->monitors();
-
     for (auto& ev : events) {
         if (!ev.isMouseEvent()) continue;
 
         // 查找坐标所在的显示器
-        MonitorInfo monitor = m_monitorMgr->monitorAtPoint(ev.virtualDesktopPos);
+        MonitorInfo monitor;
+        for (const auto& candidate : m_document.monitors) {
+            if (candidate.containsVirtualPoint(ev.virtualDesktopPos)) { monitor = candidate; break; }
+        }
         if (monitor.deviceName.isEmpty()) continue;
 
         ev.monitorDeviceName = monitor.deviceName;
@@ -124,37 +133,11 @@ void ScriptRecorder::enrichEventsWithMonitorInfo(QVector<ScriptEvent>& events)
 // ============================================================================
 void ScriptRecorder::removeTrailingHotkeyEvents(QVector<ScriptEvent>& events)
 {
-    if (events.isEmpty()) return;
-
-    // 从末尾向前查找，移除由停止快捷键产生的 keydown/keyup 事件
-    // 策略: 如果最后几个事件是连续的键盘事件且时间非常接近，
-    // 可能是停止快捷键，将其移除
-
-    int removeCount = 0;
-    int64_t thresholdMs = 500; // 停止快捷键事件窗口
-
-    // 从最后一个事件向前检查
-    for (int i = events.size() - 1; i >= 0; --i) {
-        const auto& ev = events[i];
-        if (ev.isKeyboardEvent()) {
-            // 检查是否为修饰键或普通键的按下/释放事件
-            int64_t timeFromEnd = events.last().timestampMs - ev.timestampMs;
-            if (timeFromEnd < thresholdMs)
-                removeCount++;
-            else
-                break;
-        } else {
-            break;
-        }
-    }
-
-    // 最多移除4个事件 (一个组合键的按下+释放)
-    removeCount = qMin(removeCount, 4);
-
-    if (removeCount > 0) {
-        events.remove(events.size() - removeCount, removeCount);
-        LOG_INFO(QString("已移除尾部 %1 个疑似快捷键事件").arg(removeCount));
-    }
+    // 不再删除“最后 500ms 的任意按键”，这会丢失用户正常输入。
+    const uint32_t vk = KeyMapper::qtKeyToWinVk(m_settings.stopHotkey.key);
+    while (!events.isEmpty() && events.last().isKeyboardEvent()
+           && vk != 0 && events.last().winVk == vk)
+        events.removeLast();
 }
 
 void ScriptRecorder::processRecordedEvents()

@@ -1,10 +1,20 @@
 #include "MainWindow.h"
+#include "AboutDialog.h"
+#include <QDesktopServices>
+#include <QDir>
+#include <QFileInfo>
+#include <QSignalBlocker>
+#include <QTabBar>
+#include <QLayout>
 #include "MouseClickPage.h"
 #include "KeyboardClickPage.h"
 #include "ScriptPage.h"
 #include "core/AppController.h"
 #include "core/TaskManager.h"
 #include "core/MonitorManager.h"
+#include "core/ScriptRecorder.h"
+#include "platform/windows/WindowsHookManager.h"
+#include <QScreen>
 #include "settings/SettingsManager.h"
 #include "utils/Logger.h"
 #include <QCloseEvent>
@@ -28,6 +38,10 @@ MainWindow::MainWindow(AppController* controller, QWidget* parent)
     connectSignals();
     applyAppStyle();
     loadSettings();
+    m_controller->hookManager()->setOwnWindowHandle(reinterpret_cast<void*>(winId()));
+    if (!m_controller->hotkeyErrors().isEmpty())
+        statusBar()->showMessage("快捷键注册失败: " + m_controller->hotkeyErrors().join("; "));
+
 
     // 启动状态更新定时器
     m_statusUpdateTimer = new QTimer(this);
@@ -39,8 +53,8 @@ MainWindow::MainWindow(AppController* controller, QWidget* parent)
 
 MainWindow::~MainWindow()
 {
-    saveSettings();
     m_statusUpdateTimer->stop();
+    saveSettings();
 }
 
 // ============================================================================
@@ -78,53 +92,76 @@ void MainWindow::setupUI()
 
 void MainWindow::setupMenuBar()
 {
-    // 文件菜单
+    auto action = [this](QMenu* menu, const QString& text, const char* name) {
+        auto* result = menu->addAction(text);
+        result->setObjectName(QString::fromLatin1(name));
+        return result;
+    };
     m_fileMenu = menuBar()->addMenu("文件(&F)");
+    auto scriptFile = [&](const QString& text, const char* name, void (ScriptPage::*slot)()) {
+        auto* item = action(m_fileMenu, text, name);
+        m_scriptFileActions.append(item);
+        connect(item, &QAction::triggered, this, [this, slot] {
+            if (!m_controller->taskManager()->canStartTask()) return;
+            m_tabWidget->setCurrentWidget(m_scriptPage);
+            (m_scriptPage->*slot)();
+        });
+    };
+    scriptFile("导入脚本...", "importScript", &ScriptPage::onImportScript);
+    scriptFile("保存脚本", "saveScript", &ScriptPage::onSaveScript);
+    scriptFile("脚本另存为...", "saveScriptAs", &ScriptPage::onSaveAsScript);
+    m_fileMenu->addSeparator();
+    connect(action(m_fileMenu, "退出", "exitApplication"), &QAction::triggered,
+            this, &MainWindow::exitApplication);
 
-    QAction* exitAction = m_fileMenu->addAction("退出(&X)");
-    exitAction->setShortcut(QKeySequence("Alt+F4"));
-    connect(exitAction, &QAction::triggered, this, [this]() {
-        close();
-    });
+    auto* runMenu = menuBar()->addMenu("运行(&R)");
+    auto run = [&](const QString& text, const char* name, auto* page, auto slot) {
+        auto* item = action(runMenu, text, name);
+        m_runActions.append(item);
+        connect(item, &QAction::triggered, this, [this, page, slot] {
+            // 页面负责校验；TaskManager 是菜单和按钮共同的互斥状态来源。
+            if (!m_controller->taskManager()->canStartTask()) return;
+            m_tabWidget->setCurrentWidget(page);
+            (page->*slot)();
+        });
+    };
+    run("启动鼠标连点", "runMouse", m_mousePage, &MouseClickPage::onStartClicked);
+    run("启动键盘连点", "runKeyboard", m_keyboardPage, &KeyboardClickPage::onStartClicked);
+    runMenu->addSeparator();
+    run("开始脚本录制", "runRecording", m_scriptPage, &ScriptPage::onStartRecording);
+    run("启用脚本回放", "runPlayback", m_scriptPage, &ScriptPage::onStartPlayback);
+    runMenu->addSeparator();
+    auto* restore = action(runMenu, "恢复默认设置...", "restoreDefaults");
+    restore->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+R")));
+    restore->setShortcutContext(Qt::WindowShortcut);
+    connect(restore, &QAction::triggered, this, &MainWindow::restoreDefaults);
 
-    // 视图菜单
+
     m_viewMenu = menuBar()->addMenu("视图(&V)");
-
-    QAction* mouseTabAction = m_viewMenu->addAction("鼠标连点");
-    connect(mouseTabAction, &QAction::triggered, this, [this]() {
-        m_tabWidget->setCurrentIndex(0);
+    m_alwaysOnTopAction = action(m_viewMenu, "总在最前", "alwaysOnTop");
+    m_alwaysOnTopAction->setCheckable(true);
+    connect(m_alwaysOnTopAction, &QAction::toggled, this, &MainWindow::setAlwaysOnTop);
+    m_statusBarAction = action(m_viewMenu, "显示状态栏", "showStatusBar");
+    m_statusBarAction->setCheckable(true);
+    connect(m_statusBarAction, &QAction::toggled, this, [this](bool visible) {
+        statusBar()->setVisible(visible);
+        m_settings->setStatusBarVisible(visible);
     });
+    auto* tray = action(m_viewMenu, "最小化到系统托盘", "minimizeToTray");
+    tray->setEnabled(QSystemTrayIcon::isSystemTrayAvailable());
+    connect(tray, &QAction::triggered, this, &QWidget::hide);
 
-    QAction* keyboardTabAction = m_viewMenu->addAction("键盘连点");
-    connect(keyboardTabAction, &QAction::triggered, this, [this]() {
-        m_tabWidget->setCurrentIndex(1);
-    });
-
-    QAction* scriptTabAction = m_viewMenu->addAction("脚本录制");
-    connect(scriptTabAction, &QAction::triggered, this, [this]() {
-        m_tabWidget->setCurrentIndex(2);
-    });
-
-    m_viewMenu->addSeparator();
-
-    QAction* resetInputAction = m_viewMenu->addAction("输入状态复位(&R)");
-    resetInputAction->setShortcut(QKeySequence("Ctrl+Shift+R"));
-    connect(resetInputAction, &QAction::triggered, this, &MainWindow::onResetInputState);
-
-    // 帮助菜单
     m_helpMenu = menuBar()->addMenu("帮助(&H)");
-
-    QAction* aboutAction = m_helpMenu->addAction("关于(&A)");
-    connect(aboutAction, &QAction::triggered, this, [this]() {
-        QMessageBox::about(this, "关于键鼠大师",
-            "键鼠大师 KeyMouseMaster \n "
-            "版本号：v1.0\n"
-            "作者：Hucxious Assisted by DeepSeekV4\n"
-            "QQ：2454100241\n"
-            "Windows键鼠自动化工具\n\n"
-            "功能：鼠标连点 | 键盘连点 | 脚本录制回放\n"
-            "支持多显示器、高DPI、全局快捷键");
+    connect(action(m_helpMenu, "使用说明", "userGuide"), &QAction::triggered, this, &MainWindow::openUserGuide);
+    connect(action(m_helpMenu, "GitHub 项目主页", "github"), &QAction::triggered, this, &MainWindow::openGitHub);
+    connect(action(m_helpMenu, "问题反馈", "feedback"), &QAction::triggered, this, &MainWindow::openGitHub);
+    m_helpMenu->addSeparator();
+    connect(action(m_helpMenu, "关于 KeyMouseMaster", "aboutKmm"), &QAction::triggered, this, [this] {
+        AboutDialog dialog(this);
+        connect(&dialog, &AboutDialog::githubRequested, this, &MainWindow::openGitHub);
+        dialog.exec();
     });
+    connect(action(m_helpMenu, "关于 Qt", "aboutQt"), &QAction::triggered, qApp, &QApplication::aboutQt);
 }
 
 void MainWindow::setupSystemTray()
@@ -137,7 +174,7 @@ void MainWindow::setupSystemTray()
 
     m_trayShowAction = m_trayMenu->addAction("显示主窗口");
     connect(m_trayShowAction, &QAction::triggered, this, [this]() {
-        show();
+        showNormal();
         raise();
         activateWindow();
     });
@@ -147,19 +184,21 @@ void MainWindow::setupSystemTray()
     m_trayStartAction = m_trayMenu->addAction("启动当前任务");
     m_trayStopAction = m_trayMenu->addAction("停止当前任务");
     m_trayStopAction->setEnabled(false);
+    connect(m_trayStartAction, &QAction::triggered, this, [this]() {
+        const int index = m_tabWidget->currentIndex();
+        m_runActions.at(index == 2 ? 3 : index)->trigger();
+    });
+    connect(m_trayStopAction, &QAction::triggered, m_controller->taskManager(), &TaskManager::requestStop);
 
     m_trayMenu->addSeparator();
 
     m_trayResetAction = m_trayMenu->addAction("输入状态复位");
-    connect(m_trayResetAction, &QAction::triggered, this, &MainWindow::onResetInputState);
+    connect(m_trayResetAction, &QAction::triggered, m_controller, &AppController::resetInputState);
 
     m_trayMenu->addSeparator();
 
     m_trayExitAction = m_trayMenu->addAction("退出");
-    connect(m_trayExitAction, &QAction::triggered, this, [this]() {
-        m_settings->setTrayCloseBehavior(static_cast<int>(TrayCloseBehavior::Exit));
-        close();
-    });
+    connect(m_trayExitAction, &QAction::triggered, this, &MainWindow::exitApplication);
 
     m_trayIcon->setContextMenu(m_trayMenu);
 
@@ -184,6 +223,17 @@ void MainWindow::setupStatusBar()
 
 void MainWindow::connectSignals()
 {
+    connect(m_controller, &AppController::mouseToggleRequested, this, &MainWindow::onMousePageStart);
+    connect(m_controller, &AppController::keyboardToggleRequested, this, &MainWindow::onKeyboardPageStart);
+    connect(m_controller, &AppController::recordingToggleRequested, this, &MainWindow::onScriptRecordStart);
+    connect(m_controller, &AppController::recordedDocumentReady, m_scriptPage, &ScriptPage::setDocument);
+    connect(m_controller, &AppController::hotkeyRegistrationError, this, [this](const QString& msg) {
+        statusBar()->showMessage("快捷键注册失败: " + msg);
+    });
+    const auto showStatus = [this](const QString& msg) { statusBar()->showMessage(msg, 10000); };
+    connect(m_mousePage, &MouseClickPage::statusMessage, this, showStatus);
+    connect(m_keyboardPage, &KeyboardClickPage::statusMessage, this, showStatus);
+    connect(m_scriptPage, &ScriptPage::statusMessage, this, showStatus);
     // 分页切换
     connect(m_tabWidget, &QTabWidget::currentChanged, this, &MainWindow::onTabChanged);
 
@@ -222,6 +272,15 @@ void MainWindow::connectSignals()
             this, [this](const QString& msg) {
                 statusBar()->showMessage(msg, 5000);
             });
+
+    // 回放切换快捷键 (F10) 触发
+    connect(m_controller, &AppController::playbackToggleRequested,
+            this, [this]() {
+                // 切换到脚本页面
+                m_tabWidget->setCurrentIndex(2);
+                // 触发回放
+                onScriptPlaybackStart();
+            });
 }
 
 // ============================================================================
@@ -229,27 +288,65 @@ void MainWindow::connectSignals()
 // ============================================================================
 void MainWindow::loadSettings()
 {
-    QSize size = m_settings->windowSize();
-    if (size.isValid()) resize(size);
-
-    QPoint pos = m_settings->windowPosition();
-    if (pos.x() >= 0 && pos.y() >= 0) move(pos);
-
-    int tabIndex = m_settings->currentTabIndex();
-    if (tabIndex >= 0 && tabIndex < m_tabWidget->count())
-        m_tabWidget->setCurrentIndex(tabIndex);
+    m_alwaysOnTopAction->setChecked(m_settings->alwaysOnTop());
+    m_statusBarAction->setChecked(m_settings->statusBarVisible());
+    statusBar()->setVisible(m_settings->statusBarVisible());
+    ensurePolished();
+    for (auto* widget : m_scriptPage->findChildren<QWidget*>()) widget->ensurePolished();
+    m_scriptPage->ensurePolished();
+    for (auto* layout : m_scriptPage->findChildren<QLayout*>()) layout->invalidate();
+    m_scriptPage->layout()->activate();
+    // 使用页面自然尺寸加窗口装饰；最小尺寸仍独立保持 700×500。
+    const QSize pageHint = m_scriptPage->recommendedPageSize();
+    const int chrome = menuBar()->sizeHint().height() + m_tabWidget->tabBar()->sizeHint().height()
+        + (m_statusBarAction->isChecked() ? statusBar()->sizeHint().height() : 0);
+    QSize desired = QSize(pageHint.width() + 24, pageHint.height() + chrome + 24).expandedTo(minimumSize());
+    const QSize saved = m_settings->windowSize();
+    const bool validSaved = saved.width() >= minimumWidth() && saved.height() >= minimumHeight();
+    if (validSaved) desired = saved;
+    QScreen* screen = QGuiApplication::primaryScreen();
+    const QPoint savedPos = m_settings->windowPosition();
+    for (auto* candidate : QGuiApplication::screens()) {
+        if (candidate->availableGeometry().contains(savedPos)) { screen = candidate; break; }
+    }
+    const QRect available = screen->availableGeometry().adjusted(8, fontMetrics().height() * 2, -8, -8);
+    desired = desired.boundedTo(available.size()).expandedTo(minimumSize());
+    resize(desired);
+    QPoint target = validSaved ? savedPos : available.center() - QPoint(width()/2, height()/2);
+    target.setX(qBound(available.left(), target.x(), qMax(available.left(), available.right()-width()+1)));
+    target.setY(qBound(available.top(), target.y(), qMax(available.top(), available.bottom()-height()+1)));
+    move(target);
+    // 恢复标签期间不能触发保存，覆盖尚未恢复的窗口状态。
+    const QSignalBlocker blocker(m_tabWidget);
+    const int tabIndex = m_settings->currentTabIndex();
+    if (tabIndex >= 0 && tabIndex < m_tabWidget->count()) m_tabWidget->setCurrentIndex(tabIndex);
+    if (m_settings->windowMaximized()) setWindowState(windowState() | Qt::WindowMaximized);
 }
 
 void MainWindow::saveSettings()
 {
-    m_settings->setWindowSize(size());
-    m_settings->setWindowPosition(pos());
+    const QRect normal = (isMaximized() || isMinimized()) ? normalGeometry() : geometry();
+    m_settings->setWindowSize(normal.size());
+    m_settings->setWindowPosition(normal.topLeft());
+    m_settings->setWindowMaximized(isMaximized());
     m_settings->setCurrentTabIndex(m_tabWidget->currentIndex());
 
     m_mousePage->saveSettings();
     m_keyboardPage->saveSettings();
     m_scriptPage->saveSettings();
+
+    // 检查快捷键冲突
+    QString conflictMsg = m_settings->checkHotkeyConflicts();
+    if (!conflictMsg.isEmpty()) {
+        LOG_WARNING(conflictMsg);
+        // 不阻塞保存，但记录警告
+    }
+
     m_settings->sync();
+
+    // 热键变更后立即重新注册，无需重启生效
+    m_controller->registerAllHotkeys();
+    LOG_INFO("设置已保存，快捷键已重新注册");
 }
 
 void MainWindow::applyAppStyle()
@@ -334,7 +431,7 @@ void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason)
         if (isVisible()) {
             hide();
         } else {
-            show();
+            showNormal();
             raise();
             activateWindow();
         }
@@ -368,13 +465,23 @@ void MainWindow::updateTrayIcon(TaskState state)
 // ============================================================================
 void MainWindow::onMousePageStart()
 {
+    if (!m_controller->taskManager()->canStartTask()) return;
+    m_mousePage->saveSettings();
     QString error;
+    // 热键变更后立即重新注册，无需重启生效
+    m_controller->registerAllHotkeys();
+    // 先将设置应用到引擎
+    m_controller->applyMouseSettings();
+    // 先设置运行状态，再启动引擎（引擎在线程中异步执行，不阻塞 UI）
+    m_isTaskRunning = true;
+    m_mousePage->setRunningState(true);
     if (!m_controller->taskManager()->requestStartMouseClick(&error)) {
+        // 启动失败，回退状态
+        m_isTaskRunning = false;
+        m_mousePage->setRunningState(false);
         statusBar()->showMessage("启动失败: " + error, 5000);
         return;
     }
-    m_isTaskRunning = true;
-    m_mousePage->setRunningState(true);
 }
 
 void MainWindow::onMousePageStop()
@@ -384,13 +491,23 @@ void MainWindow::onMousePageStop()
 
 void MainWindow::onKeyboardPageStart()
 {
+    if (!m_controller->taskManager()->canStartTask()) return;
+    m_keyboardPage->saveSettings();
     QString error;
+    // 热键变更后立即重新注册，无需重启生效
+    m_controller->registerAllHotkeys();
+    // 先将设置应用到引擎
+    m_controller->applyKeyboardSettings();
+    // 先设置运行状态，再启动引擎（引擎在线程中异步执行，不阻塞 UI）
+    m_isTaskRunning = true;
+    m_keyboardPage->setRunningState(true);
     if (!m_controller->taskManager()->requestStartKeyboardClick(&error)) {
+        // 启动失败，回退状态
+        m_isTaskRunning = false;
+        m_keyboardPage->setRunningState(false);
         statusBar()->showMessage("启动失败: " + error, 5000);
         return;
     }
-    m_isTaskRunning = true;
-    m_keyboardPage->setRunningState(true);
 }
 
 void MainWindow::onKeyboardPageStop()
@@ -400,9 +517,10 @@ void MainWindow::onKeyboardPageStop()
 
 void MainWindow::onScriptRecordStart()
 {
-    RecordingSettings settings;
-    settings.recordMouseMove  = m_scriptPage->findChild<QCheckBox*>("") ? true : true;
-    // 从 UI 控件读取录制设置
+    if (!m_controller->taskManager()->canStartTask()) return;
+    if (!m_scriptPage->confirmDiscardChanges()) return;
+    // 从 ScriptPage 读取录制设置
+    RecordingSettings settings = m_scriptPage->recordingSettings();
     QString error;
     if (!m_controller->taskManager()->requestStartRecording(settings, &error)) {
         statusBar()->showMessage("启动录制失败: " + error, 5000);
@@ -419,11 +537,17 @@ void MainWindow::onScriptRecordStop()
 
 void MainWindow::onScriptPlaybackStart()
 {
-    // 从脚本页面获取当前脚本和回放设置
-    QString error;
-    ScriptDocument doc; // 从ScriptPage获取
-    PlaybackSettings settings;
+    if (!m_controller->taskManager()->canStartTask()) return;
+    // 从 ScriptPage 获取当前脚本和回放设置
+    ScriptDocument doc = m_scriptPage->currentDocument();
+    PlaybackSettings settings = m_scriptPage->playbackSettings();
 
+    if (doc.isEmpty()) {
+        statusBar()->showMessage("脚本事件为空，请先录制或导入脚本", 5000);
+        return;
+    }
+
+    QString error;
     if (!m_controller->taskManager()->requestStartPlayback(doc, settings, &error)) {
         statusBar()->showMessage("启动回放失败: " + error, 5000);
         return;
@@ -446,10 +570,72 @@ void MainWindow::onEmergencyStop()
     m_scriptPage->setRunningState(false);
 }
 
-void MainWindow::onResetInputState()
+void MainWindow::restoreDefaults()
 {
+    const auto answer = QMessageBox::warning(this, "恢复默认设置",
+        "确定要停止当前任务，并恢复所有参数、快捷键和窗口设置吗？\n\n"
+        "当前脚本文档和磁盘上的脚本文件将保留。",
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes) return;
+
+    // 先停止录制并接收文档，再重载配置，避免丢失录制结果或留下按下状态。
     m_controller->resetInputState();
-    statusBar()->showMessage("输入状态已复位", 3000);
+    m_controller->unregisterAllHotkeys();
+    m_settings->resetAll();
+    m_mousePage->loadSettings();
+    m_keyboardPage->loadSettings();
+    m_scriptPage->loadSettings();
+    if (isMaximized() || isMinimized()) showNormal();
+    loadSettings();
+    saveSettings();
+    statusBar()->showMessage("所有设置已恢复为默认值", 5000);
+    LOG_INFO("所有设置已恢复为默认值");
+}
+
+void MainWindow::exitApplication()
+{
+    m_controller->emergencyStop();
+    if (!m_scriptPage->confirmDiscardChanges()) return;
+    saveSettings();
+    m_trayIcon->hide();
+    hide();
+    QApplication::quit();
+}
+
+void MainWindow::openGitHub()
+{
+    if (!QDesktopServices::openUrl(QUrl(QString::fromLatin1(KmmProjectUrl)))) {
+        LOG_WARNING("无法打开 GitHub 项目主页");
+        QMessageBox::warning(this, "打开链接", "无法打开 GitHub 项目主页，请检查默认浏览器设置。");
+    }
+}
+
+void MainWindow::openUserGuide()
+{
+    const QString path = QDir(QCoreApplication::applicationDirPath()).filePath("docs/user-guide.html");
+    if (!QFileInfo(path).isFile()) {
+        LOG_WARNING("未找到本地使用说明文件: " + path);
+        QMessageBox::warning(this, "使用说明", "未找到本地使用说明文件。");
+        return;
+    }
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path))) {
+        LOG_WARNING("无法打开本地使用说明: " + path);
+        QMessageBox::warning(this, "使用说明", "无法打开使用说明，请检查默认浏览器设置。");
+    }
+}
+
+void MainWindow::setAlwaysOnTop(bool enabled)
+{
+    const QRect previousGeometry = geometry();
+    const auto previousState = windowState();
+    const bool visible = isVisible();
+    setWindowFlag(Qt::WindowStaysOnTopHint, enabled);
+    setGeometry(previousGeometry);
+    setWindowState(previousState);
+    if (visible) show();
+    // Windows 改窗口标志可能重建 HWND，Hook 的自身窗口过滤也必须同步。
+    m_controller->hookManager()->setOwnWindowHandle(reinterpret_cast<void*>(winId()));
+    m_settings->setAlwaysOnTop(enabled);
 }
 
 // ============================================================================
@@ -480,7 +666,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
         QMessageBox msgBox(this);
         msgBox.setWindowTitle("键鼠大师");
         msgBox.setText("请选择关闭行为：");
-        msgBox.setInformativeText("是否记住此选择？");
+        msgBox.setInformativeText("最小化到托盘后，双击托盘图标可以恢复窗口。");
 
         QPushButton* exitBtn = msgBox.addButton("直接退出", QMessageBox::AcceptRole);
         QPushButton* trayBtn = msgBox.addButton("最小化到托盘", QMessageBox::RejectRole);
@@ -493,7 +679,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
             event->ignore();
             hide();
             return;
-        } else if (msgBox.clickedButton() == cancelBtn) {
+        } else if (msgBox.clickedButton() != exitBtn) {
             event->ignore();
             return;
         }
@@ -503,6 +689,9 @@ void MainWindow::closeEvent(QCloseEvent* event)
     if (m_isTaskRunning) {
         m_controller->emergencyStop();
     }
+
+    // 停止录制后文档才到达页面，此时检查未保存内容。
+    if (!m_scriptPage->confirmDiscardChanges()) { event->ignore(); return; }
 
     saveSettings();
     m_trayIcon->hide();
@@ -516,29 +705,57 @@ void MainWindow::showEvent(QShowEvent* event)
     updateStatusBar();
 }
 
+void MainWindow::changeEvent(QEvent* event)
+{
+    QMainWindow::changeEvent(event);
+    if (event->type() == QEvent::WindowStateChange && isMinimized()
+        && m_settings->minimizeToTray() && QSystemTrayIcon::isSystemTrayAvailable())
+        QTimer::singleShot(0, this, &QWidget::hide);
+}
+
 void MainWindow::onTaskStateChanged(TaskState state)
 {
     updateTrayIcon(state);
+    const bool canStart = m_controller->taskManager()->canStartTask();
+    for (auto* action : m_runActions) action->setEnabled(canStart);
+    for (auto* action : m_scriptFileActions) action->setEnabled(canStart);
 
     bool running = (state == TaskState::MouseClicking
                     || state == TaskState::KeyboardClicking
                     || state == TaskState::Recording
                     || state == TaskState::Playing
-                    || state == TaskState::Paused);
+                    || state == TaskState::Paused
+                    || state == TaskState::Preparing || state == TaskState::Stopping);
 
-    if (!running && m_isTaskRunning) {
-        // 任务结束
+    if (running) {
+        // 任务启动 — 同步更新对应页面的按钮状态
+        m_isTaskRunning = true;
+        switch (state) {
+        case TaskState::MouseClicking:
+            m_mousePage->setRunningState(true);
+            break;
+        case TaskState::KeyboardClicking:
+            m_keyboardPage->setRunningState(true);
+            break;
+        case TaskState::Recording:
+        case TaskState::Playing:
+        case TaskState::Paused:
+            m_scriptPage->setRunningState(true);
+            break;
+        default: break;
+        }
+    } else if (m_isTaskRunning) {
+        // 任务结束 — 复位所有页面按钮状态
         m_isTaskRunning = false;
         m_mousePage->setRunningState(false);
         m_keyboardPage->setRunningState(false);
         m_scriptPage->setRunningState(false);
 
-        // 录制停止后获取事件
-        if (state == TaskState::Idle || state == TaskState::Completed) {
-            // 从录制器获取文档并更新脚本页面
-        }
     }
 
+    m_mousePage->setEnabled(!running || state == TaskState::MouseClicking || state == TaskState::Stopping);
+    m_keyboardPage->setEnabled(!running || state == TaskState::KeyboardClicking || state == TaskState::Stopping);
+    m_scriptPage->setEnabled(!running || state == TaskState::Recording || state == TaskState::Playing || state == TaskState::Paused || state == TaskState::Stopping);
     m_stateLabel->setText(taskStateToString(state));
     m_trayStartAction->setEnabled(!running);
     m_trayStopAction->setEnabled(running);

@@ -92,23 +92,15 @@ inline const char* clickModeToString(ClickMode mode)
 // ============================================================================
 enum class KeyInputMode
 {
-    Normal,
-    Combo,
-    PressOnly,
-    ReleaseOnly,
-    FullKey,
-    Hold
+    Normal = 0,
+    Hold = 5 // 保留旧 QSettings 数值，避免把旧组合键模式误识别为长按。
 };
 
 inline const char* keyInputModeToString(KeyInputMode mode)
 {
     switch (mode) {
-    case KeyInputMode::Normal:      return "普通单键";
-    case KeyInputMode::Combo:       return "组合键";
-    case KeyInputMode::PressOnly:   return "仅按下";
-    case KeyInputMode::ReleaseOnly: return "仅释放";
-    case KeyInputMode::FullKey:     return "完整按键";
-    case KeyInputMode::Hold:        return "长按";
+    case KeyInputMode::Normal: return "普通按键";
+    case KeyInputMode::Hold:   return "长按";
     }
     return "未知";
 }

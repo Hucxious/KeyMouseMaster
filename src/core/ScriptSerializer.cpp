@@ -49,42 +49,8 @@ bool ScriptSerializer::load(const QString& filePath, ScriptDocument& outDoc,
 
 bool ScriptSerializer::validateFile(const QString& filePath, QString* errorMsg)
 {
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (errorMsg) *errorMsg = QString("无法打开文件: %1").arg(file.errorString());
-        return false;
-    }
-
-    QByteArray data = file.readAll();
-    file.close();
-
-    QJsonParseError parseError;
-    QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
-    if (parseError.error != QJsonParseError::NoError) {
-        if (errorMsg) *errorMsg = QString("JSON格式错误: %1").arg(parseError.errorString());
-        return false;
-    }
-
-    QJsonObject obj = doc.object();
-
-    if (obj["format"].toString() != AppConstants::SCRIPT_FORMAT) {
-        if (errorMsg) *errorMsg = "不是有效的KeyMouseMaster脚本文件";
-        return false;
-    }
-
-    int version = obj["version"].toInt(-1);
-    if (version != AppConstants::SCRIPT_VERSION) {
-        if (errorMsg) *errorMsg = QString("脚本版本 %1 不受支持").arg(version);
-        return false;
-    }
-
-    QJsonArray events = obj["events"].toArray();
-    if (events.size() > AppConstants::MAX_SCRIPT_EVENTS) {
-        if (errorMsg) *errorMsg = QString("事件数量(%1)超过上限").arg(events.size());
-        return false;
-    }
-
-    return true;
+    ScriptDocument parsed;
+    return parsed.loadFromFile(filePath, errorMsg);
 }
 
 QString ScriptSerializer::defaultFileName()

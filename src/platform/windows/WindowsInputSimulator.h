@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QPoint>
 #include <QVector>
+#include <QSet>
 #include <cstdint>
 #include <atomic>
 #include <mutex>
@@ -76,6 +77,7 @@ private:
                         ULONG_PTR extraInfo = APP_EXTRA_INFO);
 
     QVector<uint32_t> m_pressedKeys;
+    QSet<uint32_t> m_extendedKeys;
     QVector<uint32_t> m_pressedMouseButtons;
     mutable std::mutex m_mutex;
 };

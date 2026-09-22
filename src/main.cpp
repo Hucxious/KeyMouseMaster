@@ -22,6 +22,7 @@ int main(int argc, char* argv[])
     QApplication::setAttribute(Qt::AA_UseHighDpiPixmaps, true);
 #endif
 
+    WindowsDpiManager::initializeDpiSupport();
     QApplication app(argc, argv);
     app.setApplicationName("KeyMouseMaster");
     app.setApplicationDisplayName("键鼠大师");
@@ -31,18 +32,21 @@ int main(int argc, char* argv[])
     app.setQuitOnLastWindowClosed(false);  // 支持系统托盘
 
     // Windows 高DPI感知设置
-    WindowsDpiManager::initializeDpiSupport();
 
     // ========================================================================
     // 日志初始化
     // ========================================================================
-    QString logDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
-                     + "/logs";
+    // 日志保存在程序主文件夹下的 log/ 子目录中
+    // 文件名格式: Log_KMM_yyyy-MM-dd_HH-mm-ss.log
+    // 优先使用应用程序所在目录，如果不存在则使用当前工作目录
+    QString appDir = QCoreApplication::applicationDirPath();
+    QString logDir = appDir + "/log";
     Logger::instance()->init(logDir);
     LOG_INFO("========================================");
     LOG_INFO("键鼠大师 KeyMouseMaster v1.0 启动");
     LOG_INFO(QString("Qt版本: %1").arg(qVersion()));
     LOG_INFO(QString("日志目录: %1").arg(logDir));
+    LOG_INFO(QString("程序目录: %1").arg(appDir));
 
     // 记录DPI信息
     WindowsDpiManager::logDpiInfo();
@@ -50,6 +54,8 @@ int main(int argc, char* argv[])
     // ========================================================================
     // 应用控制器初始化
     // ========================================================================
+    int result = 1;
+    {
     AppController controller;
 
     QObject::connect(&controller, &AppController::initialized, [&]() {
@@ -83,7 +89,7 @@ int main(int argc, char* argv[])
     // ========================================================================
     // 事件循环
     // ========================================================================
-    int result = app.exec();
+    result = app.exec();
 
     // ========================================================================
     // 清理
@@ -91,6 +97,7 @@ int main(int argc, char* argv[])
     LOG_INFO("键鼠大师正在退出...");
     controller.emergencyStop();
     app.removeNativeEventFilter(static_cast<QAbstractNativeEventFilter*>(controller.hotkeyManager()));
+    } // 主窗口、控制器和平台资源全部销毁后再关闭日志。
     Logger::instance()->shutdown();
 
     return result;

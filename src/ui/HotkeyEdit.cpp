@@ -2,6 +2,9 @@
 #include <QKeyEvent>
 #include <QFocusEvent>
 
+int HotkeyEdit::s_capturingCount = 0;
+std::function<void(bool)> HotkeyEdit::s_captureStateCallback = nullptr;
+
 HotkeyEdit::HotkeyEdit(QWidget* parent)
     : QLineEdit(parent)
 {
@@ -15,7 +18,11 @@ void HotkeyEdit::setHotkey(const HotkeyInfo& hk)
 {
     m_hotkey = hk;
     updateDisplay();
-    emit hotkeyChanged(m_hotkey);
+}
+
+HotkeyEdit::~HotkeyEdit()
+{
+    if (m_capturing) finishCapture();
 }
 
 void HotkeyEdit::clearHotkey()
@@ -64,8 +71,9 @@ void HotkeyEdit::keyPressEvent(QKeyEvent* event)
     }
 
     updateDisplay();
-    finishCapture();
     emit hotkeyChanged(m_hotkey);
+    // 先保存新值，再恢复注册，否则仍然注册的是旧快捷键。
+    finishCapture();
 }
 
 void HotkeyEdit::keyReleaseEvent(QKeyEvent* event)
@@ -86,9 +94,25 @@ void HotkeyEdit::focusOutEvent(QFocusEvent* event)
     QLineEdit::focusOutEvent(event);
 }
 
+void HotkeyEdit::setCaptureStateCallback(std::function<void(bool)> callback)
+{
+    s_captureStateCallback = std::move(callback);
+}
+
+void HotkeyEdit::notifyCapture(bool active)
+{
+    if (active) {
+        if (++s_capturingCount == 1 && s_captureStateCallback) s_captureStateCallback(true);
+    } else if (s_capturingCount > 0) {
+        if (--s_capturingCount == 0 && s_captureStateCallback) s_captureStateCallback(false);
+    }
+}
+
 void HotkeyEdit::startCapture()
 {
     m_capturing = true;
+    // 捕获开始时临时注销全局热键，让按键能到达 Qt 事件系统
+    notifyCapture(true);
     setText("... 按下快捷键 ...");
     setStyleSheet("QLineEdit { color: #2196F3; font-weight: bold; }");
     setFocus();
@@ -97,6 +121,7 @@ void HotkeyEdit::startCapture()
 void HotkeyEdit::finishCapture()
 {
     m_capturing = false;
+    notifyCapture(false);
     setStyleSheet("");
     updateDisplay();
 }

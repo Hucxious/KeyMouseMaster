@@ -31,12 +31,17 @@ public:
 protected:
     void closeEvent(QCloseEvent* event) override;
     void showEvent(QShowEvent* event) override;
+    void changeEvent(QEvent* event) override;
     bool eventFilter(QObject* obj, QEvent* event) override;
 
 private slots:
     void onTaskStateChanged(TaskState state);
     void onEmergencyStop();
-    void onResetInputState();
+    void restoreDefaults();
+    void exitApplication();
+    void openGitHub();
+    void openUserGuide();
+    void setAlwaysOnTop(bool enabled);
     void onTrayIconActivated(QSystemTrayIcon::ActivationReason reason);
     void onTabChanged(int index);
     void onMousePageStart();
@@ -70,6 +75,10 @@ private:
     ScriptPage* m_scriptPage;
 
     // 菜单
+    QVector<QAction*> m_runActions;
+    QVector<QAction*> m_scriptFileActions;
+    QAction* m_alwaysOnTopAction;
+    QAction* m_statusBarAction;
     QMenu* m_fileMenu;
     QMenu* m_viewMenu;
     QMenu* m_helpMenu;

@@ -1,4 +1,5 @@
 #include "MonitorInfo.h"
+#include "core/CoordinateMapper.h"
 #include <QCryptographicHash>
 
 QString MonitorInfo::uniqueId() const
@@ -46,8 +47,9 @@ QPoint MonitorInfo::ratioToInternal(const QPointF& ratioPt) const
     int w = desktopRect.width();
     int h = desktopRect.height();
 
-    return QPoint(qRound(ratioPt.x() * w),
-                  qRound(ratioPt.y() * h));
+    Q_UNUSED(w)
+    Q_UNUSED(h)
+    return CoordinateMapper::ratioToInternal(ratioPt, *this);
 }
 
 bool MonitorInfo::matches(const MonitorInfo& other) const

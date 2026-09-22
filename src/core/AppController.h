@@ -68,6 +68,15 @@ public:
         HK_PLAYBACK_STOP
     };
 
+    // 热键对应的操作类型
+    enum class HotkeyAction {
+        MouseToggle,
+        KeyboardToggle,
+        RecordingToggle,
+        PlaybackToggle,
+        EmergencyStop
+    };
+
 public slots:
     // 全局操作
     void emergencyStop();
@@ -75,12 +84,27 @@ public slots:
     void registerAllHotkeys();
     void unregisterAllHotkeys();
 
+    // 将当前设置应用到引擎配置
+    void applyMouseSettings();
+    void applyKeyboardSettings();
+
 signals:
     void initialized();
     void initializationError(const QString& message);
     void emergencyStopTriggered();
     void inputStateReset();
     void statusMessage(const QString& message);
+    void playbackToggleRequested();
+    void mouseToggleRequested();
+    void keyboardToggleRequested();
+    void recordingToggleRequested();
+    void recordedDocumentReady(const ScriptDocument& document);
+    void hotkeyRegistrationError(const QString& message);
+public:
+    QStringList hotkeyErrors() const { return m_hotkeyErrors; }
+private:
+    QStringList m_hotkeyErrors;
+signals:
 
 private slots:
     void onGlobalHotkeyPressed(int id);
@@ -108,6 +132,8 @@ private:
 
     // 已注册的热键ID列表
     QVector<int> m_registeredHotkeyIds;
+    // 热键ID → 操作类型映射
+    QHash<int, HotkeyAction> m_hotkeyActions;
 };
 
 #endif // APPCONTROLLER_H

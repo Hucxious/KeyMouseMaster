@@ -1,5 +1,6 @@
 #include "ValidationUtils.h"
 #include "AppTypes.h"
+#include <cmath>
 
 bool ValidationUtils::validateIntRange(int value, int min, int max,
                                         QString* errorMsg, const QString& fieldName)
@@ -17,7 +18,12 @@ bool ValidationUtils::validateIntRange(int value, int min, int max,
 
 bool ValidationUtils::validateClickInterval(int value, int unitMs, QString* errorMsg)
 {
-    int valueMs = value * unitMs;
+    const qint64 wide = static_cast<qint64>(value) * unitMs;
+    if (wide < 1 || wide > AppConstants::MAX_CLICK_INTERVAL_MS) {
+        if (errorMsg) *errorMsg = "点击间隔必须为 1～3600000 ms";
+        return false;
+    }
+    int valueMs = static_cast<int>(wide);
     return validateIntRange(valueMs, AppConstants::MIN_CLICK_INTERVAL_MS,
                             AppConstants::MAX_CLICK_INTERVAL_MS, errorMsg, "点击间隔");
 }
@@ -59,22 +65,10 @@ bool ValidationUtils::validatePlaybackSpeed(double speed, QString* errorMsg)
 {
     constexpr double MIN_SPEED = 0.1;
     constexpr double MAX_SPEED = 10.0;
-    if (speed < MIN_SPEED || speed > MAX_SPEED) {
+    if (!std::isfinite(speed) || speed < MIN_SPEED || speed > MAX_SPEED) {
         if (errorMsg)
             *errorMsg = QString("播放速度 %1x 超出范围 [%2, %3]")
                 .arg(speed).arg(MIN_SPEED).arg(MAX_SPEED);
-        return false;
-    }
-    return true;
-}
-
-bool ValidationUtils::validatePressVsInterval(int pressDuration, int intervalMs,
-                                               QString* errorMsg)
-{
-    if (pressDuration >= intervalMs) {
-        if (errorMsg)
-            *errorMsg = QString("按压时长(%1ms) 必须小于 按键间隔(%2ms)")
-                .arg(pressDuration).arg(intervalMs);
         return false;
     }
     return true;
